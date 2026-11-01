@@ -1,10 +1,22 @@
 # 15c 실시간 차량 시연 웹사이트 기술 명세서
 
-작성일: 2026-10-29 · 명세 버전: 1.3 (자차 조향 한계 상향·종횡 연동 회피·앞차 따라가기·회피 모드 단일화 반영) · 프로토콜: `v1` · 기준: `demo_v15c`
+작성일: 2026-10-29 · 개정: 2026-11-01 · 명세 버전: 1.4 (자동 모드(가상 운전자) 추가) · 프로토콜: `v1` · 기준: `demo_v15c`
 
 대상: 프론트엔드, 백엔드, 모델 연동 담당자, QA.
 
 **이 문서는 구현 계약이다. 아래 HTTP/WebSocket API는 새로 구현할 규격이며 현재 15c에 존재하는 API가 아니다.** 현재 구현은 Python 시뮬레이션과 Pygame 화면이다. 기존 모델·시뮬레이션 소스는 변경하지 않고 웹 어댑터를 추가하는 것을 기준으로 한다. 함께 제공하는 [web-demo-contracts.ts](web-demo-contracts.ts)는 요청·응답의 필드와 타입을 정의한다. 본문의 동작·검증 규칙과 함께 적용한다.
+
+### 변경 요약 (v1.3 → v1.4)
+
+웹 어댑터에 **자동 모드(가상 운전자)** 를 추가했다. 15c 알고리즘(`demo_v15c`의 시뮬레이션·탐지·누적·자차 회피)은 바뀌지 않는다. 계약은 **하위 호환 추가만** 했고 `protocol_version`은 `v1` 그대로다. 자동 모드를 켜지 않은 세션의 동작은 v1.3과 같다. 동작 규칙은 1.3절.
+
+| 항목 | v1.3 | v1.4 |
+|---|---|---|
+| 이웃차 조종 | 시연자가 WASD·Q/E·1~5로 직접 | 직접 조종(기본) **또는** 세션 생성 때 `auto_drive=true`로 서버의 가상 운전자가 조종 |
+| `CreateSessionRequest` | `{solver?}` | `{solver?, auto_drive?, auto_seed?}` |
+| `HealthResponse` | — | `auto_drive_available` 추가(샘플·목업은 false) |
+| `Snapshot` | — | 선택 필드 `auto?: AutoDriveStatus` 추가 |
+| 입력 TTL | running 이면 항상 적용 | 자동 모드 세션에는 적용하지 않음(연결 생존 ping 규칙은 유지) |
 
 ### 변경 요약 (v1.2 → v1.3)
 
@@ -91,6 +103,26 @@ v1.1은 v15c-fix 이전 코드 기준이었다. 당시 자차는 차선을 무�
 **표시상 유의점:** 자차 요가속 한계는 0.3rad/s²(합성 설정값, 실측 차량값 아님)이다. 25m/s 차선변경은 약 3.6초다. 웹은 이를 보간·가속 재생으로 바꾸지 않는다. 같은 차로 앞에 이웃이 있으면 평소 주행 중에도 자차가 앞차 속도에 맞춰 느려지고 간격(25m/s에서 약 42m)을 벌린다. 시연자가 "자차가 멈칫한다"로 오해하지 않도록 HUD에 `v_ref`와 간격을 함께 표시한다.
 
 복귀에는 신뢰도 회복 2초와 간격 확보, 또는 추월/전방·도로 밖 이탈 조건을 사용한다. 정확한 경계와 단계는 `planning_demo.DemoStateMachine.update()`를 따른다. 규칙을 웹에서 다시 계산하지 않는다. 원본 `ego_rec.ttc`는 종방향 보조 TTC이고 **정책의 TTC는 횡 접근까지 고려한 별도 값**이다.
+
+### 1.3 자동 모드(가상 운전자, v1.4)
+
+자동 모드는 시연자 대신 서버가 이웃차를 조종하는 웹 어댑터 기능이다. 15c 코드는 그대로이며, 가상 운전자는 시연자와 **같은 입구**(WASD 눌림 집합, Q/E, 1~5/0)만 사용한다. 이웃 상태를 직접 바꾸지 않는다.
+
+| 항목 | 규칙 |
+|---|---|
+| 켜기 | `POST /sessions` 본문 `auto_drive=true`. 세션 도중에는 바꿀 수 없다(바꾸려면 새 세션). R(초기화)은 같은 설정·같은 시드로 다시 시작 |
+| 시드 | `auto_seed`(0 이상 안전 정수, 기본 0)는 가상 운전자의 난수에만 쓴다. 시뮬레이션 시드는 1절 기본값 그대로. 같은 시드·같은 solver면 같은 이벤트 순서 |
+| 상태 | `cruise`(첫 대기 전) → `wait`(다음 이벤트까지 카운트다운) → `event` → `recover` → `wait` … 이벤트·회복 중에는 새 이벤트를 시작하지 않는다 |
+| 이벤트 간격 | 이전 이벤트가 끝나고 **회복이 완료된 뒤부터** 8~20초(균등) |
+| 이벤트 종류 | 시나리오 1~5, 차로 진입(`cut_in`: 방향지시등 → A/D로 자차 차로 쪽 진입 → 회복 때 원래 차로로 복귀). 6가지 균등 |
+| 시나리오 종료 | drift/stuck/weave는 정해진 지속 시간 뒤 `0`(해제). brake/accel은 원본이 자동 종료할 때까지 기다린다 |
+| 회복 완료 | 주입 없음, 방향지시등 꺼짐, 이웃이 자기 차로 중심 ±0.5m 안, 자차 상태 `NORMAL`이 함께 성립 |
+| 도로 이탈 방지 | 매 스텝 `edge_margin_m = 5.25 − (\|y\| + 0.9)`. 여유가 1.0m보다 작으면 바깥쪽 A/D 금지·안쪽으로 복귀, 필요하면 시나리오 해제. 횡방향 시나리오는 이웃이 도로 중앙 쪽에 있을 때만 시작 |
+| 입력 | 자동 모드에서 들어온 `input.state`와 운전 명령(`signal.toggle`, `scenario.*`)은 **오류 없이 무시**한다(운전 명령은 ack 하되 적용하지 않음). `session.reset/pause/resume`, `tutorial.advance`는 그대로 처리 |
+| 입력 TTL | 적용하지 않는다. 3초 무응답 연결 종료(`paused/disconnected`)는 그대로 |
+| 표시 | `Snapshot.auto`: 상태·이벤트 종류·다음 이벤트까지 남은 초·도로 가장자리 여유·최근 20개 로그. `inputs.held_applied`는 운전자가 쓴 키, `held_received`는 빈 배열 |
+
+조정값(간격·확률·여유·키 유지 시간·지속 시간)은 `real/auto_driver.py` 맨 위 `AUTO` 한 곳에 둔다. 샘플 모드와 목업 서버는 자동 모드가 없으며 `auto_drive_available=false`, `auto.enabled=false`를 보낸다.
 
 엔진을 바꾸려면 기존 세션을 종료하고 새 세션을 생성하여 안내부터 시작한다. R은 선택한 엔진과 최초 설정으로 돌아간다. NMPC solver 실패 시 원본 fallback 가속 −3m/s²를 쓰고(정책 제동이 더 강하면 정책 값), 조향은 정책 경로 추종으로 유지한다(Y=0 강제 복귀 없음). 이를 표시한다. 세션의 엔진 표시를 조용히 rule로 바꾸지 않는다.
 
@@ -289,9 +321,9 @@ REST 세션 API는 `Authorization: Bearer <session_token>`. 토큰은 브라우�
 }
 ```
 
-위 응답의 snapshot 문자열은 문서상 자리표시자이며 실제 응답은 타입에 따른 객체다. 요청 solver 생략 시 rule. 그 외 필드/미지원 solver는 거절한다. 초기 설정은 서버 `DemoConfig.defaults`에서 가져온다. nmpc가 준비되지 않았으면 `SOLVER_UNAVAILABLE`이며 rule로 자동 치환하지 않는다. Idempotency-Key는 120초 보존하고 같은 키+본문은 같은 생성 결과, 같은 키+다른 본문은 409. 동시 생성 중 중복 요청은 같은 결과를 기다린다.
+위 응답의 snapshot 문자열은 문서상 자리표시자이며 실제 응답은 타입에 따른 객체다. 요청 solver 생략 시 rule. v1.4부터 `auto_drive`(boolean, 기본 false)와 `auto_seed`(0 이상 안전 정수, 기본 0)를 받는다(1.3절). 그 외 필드/미지원 solver/형식이 틀린 값은 거절한다. 자동 모드를 지원하지 않는 서버(`auto_drive_available=false`)는 `auto_drive=true`를 받아도 오류 없이 수동 세션을 만들고 `auto.enabled=false`로 알린다. 초기 설정은 서버 `DemoConfig.defaults`에서 가져온다. nmpc가 준비되지 않았으면 `SOLVER_UNAVAILABLE`이며 rule로 자동 치환하지 않는다. Idempotency-Key는 120초 보존하고 같은 키+본문은 같은 생성 결과, 같은 키+다른 본문은 409. 본문 비교에는 solver·auto_drive·auto_seed(기본값을 채운 값)를 모두 쓴다. 동시 생성 중 중복 요청은 같은 결과를 기다린다.
 
-`HealthResponse`는 상태 및 이용 가능한 solver만 공개하고 로컬 경로·가중치 내용을 노출하지 않는다. `DemoConfig`는 준비된 solver, 고정 설정, 시나리오의 정확한 순환 순서, 임계값/보정 출처 식별자, 튜토리얼 문구를 제공한다. 프론트가 숫자 상수를 별도로 복제하지 않는다.
+`HealthResponse`는 상태, 이용 가능한 solver, 자동 모드 지원 여부(`auto_drive_available`, v1.4)만 공개하고 로컬 경로·가중치 내용을 노출하지 않는다. `DemoConfig`는 준비된 solver, 고정 설정, 시나리오의 정확한 순환 순서, 임계값/보정 출처 식별자, 튜토리얼 문구를 제공한다. 프론트가 숫자 상수를 별도로 복제하지 않는다.
 
 ## 6. WebSocket 명령·이벤트 계약
 
@@ -352,7 +384,7 @@ REST 세션 API는 `Authorization: Bearer <session_token>`. 토큰은 브라우�
 }
 ```
 
-입력 TTL은 750ms다. 유효한 input.state가 750ms 동안 없으면 held/tapped를 비우고 `paused/input_timeout`으로 전환한다. running 진입/재개 시 TTL을 새로 시작한다. 단순 ping이 WASD 눌림 유효기간을 연장하지 않는다. tutorial/paused 동안에는 input timeout을 적용하지 않는다. ping은 1초 주기, 3초간 유효 메시지가 없으면 연결을 종료하고 `paused/disconnected`로 전환한다. 탭 비활성화 시 클라이언트가 빈 입력과 pause를 보내며, 서버 TTL은 그 메시지가 유실된 경우를 처리한다.
+입력 TTL은 750ms다. 유효한 input.state가 750ms 동안 없으면 held/tapped를 비우고 `paused/input_timeout`으로 전환한다. running 진입/재개 시 TTL을 새로 시작한다. 단순 ping이 WASD 눌림 유효기간을 연장하지 않는다. tutorial/paused 동안에는 input timeout을 적용하지 않는다. 자동 모드 세션(1.3절)에도 적용하지 않는다. ping은 1초 주기, 3초간 유효 메시지가 없으면 연결을 종료하고 `paused/disconnected`로 전환한다. 탭 비활성화 시 클라이언트가 빈 입력과 pause를 보내며, 서버 TTL은 그 메시지가 유실된 경우를 처리한다.
 
 ### 6.3 서버 → 클라이언트
 
@@ -386,6 +418,7 @@ WebSocket 종료 코드는 1000 정상 종료, 1008 인증/Origin/제어 권한 
 | `model.scores` | e, e_long, e_lat, r_a, R1_S, R2_ttb, d_hat, psi_hat |
 | `model.accumulator` | S, S_prime, S_eff, clipped, hold_on |
 | `model.context` | active, intent_window, zone(앞→front/뒤→rear/나란히→alongside), dx, g, R2 활성/보정 상태 |
+| `auto` (v1.4, 선택) | 웹 어댑터의 가상 운전자 상태(1.3절). 15c 원본 값이 아니다. 없거나 `enabled=false`면 수동 세션 |
 | `ego_control` | ctl.backend→control_mode, ctl.solver, ctl.info와 ego_rec. 공통 policy에 stage/danger/engaged/TTC/v_ref와 **target_y=ctl.info.target_y(=policy.active_target, 실제 추종 목표), policy_target_y=ctl.policy.target_y, nmpc_override=(ctl.policy.ov is not None)**. nmpc에 풀이·fallback/예측 궤적. ctl.info 내부 `inf['target_y']`(정책 목표)와 최종 `info['target_y']`(추종 목표)가 다르므로 최종 info 값을 쓴다 |
 | `scenario` | 현재 sim.inj; 없으면 null. 최근 종료 시나리오 정보는 last_scenario_report로 분리 |
 | `scenario.elapsed_s` | 현재 sample_tick−inj.k0에 DT를 곱한 값. 시나리오 시작 시 0 |

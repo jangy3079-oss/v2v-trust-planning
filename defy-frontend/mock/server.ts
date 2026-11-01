@@ -116,7 +116,7 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
   }
 
   if (method === 'GET' && path === `${BASE}/health`) {
-    const body: HealthResponse = { protocol_version: 'v1', ready: true, model_version: 'demo_v15c', available_solvers: MOCK_DEMO_CONFIG.available_solvers, server_time: now };
+    const body: HealthResponse = { protocol_version: 'v1', ready: true, model_version: 'demo_v15c', available_solvers: MOCK_DEMO_CONFIG.available_solvers, auto_drive_available: false, server_time: now };
     return send(res, 200, body);
   }
   if (method === 'GET' && path === `${BASE}/demo-config`) return send(res, 200, MOCK_DEMO_CONFIG);

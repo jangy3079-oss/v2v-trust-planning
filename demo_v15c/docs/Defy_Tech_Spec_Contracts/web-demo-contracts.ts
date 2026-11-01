@@ -1,6 +1,7 @@
 /**
  * 15c web demo protocol v1 — implementation contract, not an existing server.
  * Spec 1.2 (v15c-fix): lane-anchored ego targets, NMPC as planner (policy_target_y_m / nmpc_override added).
+ * Spec 1.4: optional auto drive (server-side virtual driver for the neighbor). Additive only; protocol stays v1.
  * Normative behavior: WEB_DEMO_TECH_SPEC.md.
  * JSON numbers must be finite; integer IDs/cursors must be safe integers.
  * All object fields are required unless marked ?. Unknown request fields fail.
@@ -39,6 +40,7 @@ export interface HealthResponse {
   ready: boolean;
   model_version: "demo_v15c";
   available_solvers: Solver[];
+  auto_drive_available: boolean; // 1.4: false on sample/mock servers (client hides the toggle)
   server_time: Timestamp;
 }
 
@@ -136,7 +138,9 @@ export interface DemoConfig {
 }
 
 // POST /api/v1/sessions. Header Idempotency-Key: UUID required.
-export interface CreateSessionRequest { solver?: Solver }
+// 1.4: auto_drive (default false) lets the server drive the neighbor; auto_seed is a safe integer >= 0 (default 0)
+// that seeds only the virtual driver. Both take part in the Idempotency-Key body comparison.
+export interface CreateSessionRequest { solver?: Solver; auto_drive?: boolean; auto_seed?: number }
 export interface CreateSessionResponse {
   protocol_version: ProtocolVersion;
   session_id: string;
@@ -312,6 +316,19 @@ export interface ScenarioReport {
   a2_delay_s: number | null;
 } // null delay means not observed in source report; not necessarily impossible
 
+// 1.4 auto drive. cruise = before the first countdown, wait = counting down to the next event,
+// event = an event is running, recover = event over, waiting for the recovery condition.
+export type AutoDriveState = "cruise" | "wait" | "event" | "recover";
+export interface AutoDriveStatus {
+  enabled: boolean; // false: manual session (other fields are inert)
+  seed: number;
+  state: AutoDriveState;
+  event_kind: string | null; // ScenarioKind or "cut_in"; null outside event/recover
+  next_event_in_s: number | null; // only in wait
+  edge_margin_m: number; // 5.25 − (|neighbor y| + 0.9): distance from the neighbor body to the road edge
+  log: { t_s: number; text: string }[]; // latest 20, oldest first
+}
+
 // GET /sessions/{id}, also nested in WS ready/telemetry/ack.
 export interface Snapshot {
   protocol_version: ProtocolVersion;
@@ -354,6 +371,8 @@ export interface Snapshot {
     resume_phase: "tutorial" | "running" | null;
     error: ApiError | null;
   };
+  // 1.4: absent from pre-1.4 servers. In auto mode inputs.held_applied are the driver's keys and held_received is [].
+  auto?: AutoDriveStatus;
 }
 
 // Graph history: the server stores one sample per completed step.

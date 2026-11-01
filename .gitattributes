@@ -1,0 +1,2 @@
+# 계약 원본은 defy-frontend/src/contracts.ts 와 바이트 단위로 같아야 한다 (defy-frontend/scripts/check-contracts.mjs). 줄바꿈 변환 금지
+demo_v15c/docs/Defy_Tech_Spec_Contracts/web-demo-contracts.ts -text
