@@ -7,15 +7,17 @@ import '@fontsource/barlow-semi-condensed/500.css';
 import '@fontsource/barlow-semi-condensed/600.css';
 import './styles.css';
 import type { ClientMessage, DemoConfig, DemoEvent, Snapshot } from './contracts';
-import { readConfig, readEvent, readSnapshot, snapshotOrder, type EventView, type SnapshotView } from './contract-access';
+import { createSessionBody, readConfig, readEvent, readSnapshot, snapshotOrder, type EventView, type SnapshotView } from './contract-access';
 import { DATA_SOURCE, SERVER_BASE_URL } from './config';
 import { SAMPLE_DEMO_CONFIG, STATIC_FRAMES } from './source/fixtures';
 import { createSamplePlayer } from './source/sample-player';
-import { createServerSource, fetchDemoConfig, type LinkState, type SnapshotKind } from './source/ws-client';
+import { createServerSource, fetchAutoDriveAvailable, fetchDemoConfig, type LinkState, type SnapshotKind } from './source/ws-client';
 import { createRoadView } from './view/road';
 import { createChartHistory, createChartView } from './view/chart';
 import { createPanel } from './view/panel';
 import { createKeysView } from './view/keys';
+import { createAutoView } from './view/auto';
+import { showStartCard } from './ui/start';
 import { createRenderBuffer } from './view/interp';
 import { esc } from './view/format';
 import { createInputController, type SendKind } from './input/controller';
@@ -26,7 +28,7 @@ import { createTutorialOverlay } from './ui/tutorial';
 import { createConnectionOverlay, linkLabel, linkPhase } from './ui/connection';
 import { createErrorUi, newSessionAction, type ErrorCardAction } from './ui/error';
 import { errorPolicy } from './source/error-policy';
-import { BUTTON, ERROR_TEXT, LOCK_TEXT, RATE_LIMIT_WAIT } from './ui/text-ko';
+import { AUTO_TEXT, BUTTON, ERROR_TEXT, LOCK_TEXT, RATE_LIMIT_WAIT } from './ui/text-ko';
 import { FAULTS } from './ui/debug-faults';
 import type { ServerErrorView } from './source/ws-client';
 
@@ -85,6 +87,8 @@ function boot(demoConfig: DemoConfig): void {
   const PROVENANCE_RENDER_MS = 250;
   let provRenderedAt = 0;
   const keys = createKeysView(el('keyRows'), el('keyNote'), cfg);
+  // 자동 모드 표시: Snapshot.auto 가 있을 때만 요소를 만든다 (수동 세션 화면은 그대로)
+  const autoView = createAutoView(el('roadDock'), el('keys'), cfg);
 
   const state = {
     mode: (server ? 'server' : 'play') as 'play' | 'static' | 'server',
@@ -99,6 +103,7 @@ function boot(demoConfig: DemoConfig): void {
     link: null as LinkState | null,                     // 서버 모드 연결 상태
     fatal: null as string | null,                       // 세션을 더 쓸 수 없는 오류 코드 (운전 잠금)
     lock: null as string | null,                        // 지금 표시 중인 운전 잠금 이유
+    autoRequested: false,                               // 시작 카드에서 자동을 골랐음 (지원 안 함 토스트 1회)
   };
 
   // ---- 수신: 샘플 재생기·정적 프레임·서버(ready/telemetry/ack) 공통 ----
@@ -111,6 +116,8 @@ function boot(demoConfig: DemoConfig): void {
     const older = !!cur && (o.generation < cur.generation || (o.generation === cur.generation && o.frameSeq <= cur.frameSeq));
     if (!older) {
       const view = readSnapshot(snap);
+      // 자동을 요청했는데 서버가 auto 없이 수동 세션을 만들었다 (명세 5.1): 첫 표본에서 한 번 알린다
+      if (state.autoRequested) { state.autoRequested = false; if (!view.auto) errorUi.toast(AUTO_TEXT.unsupported, 6000); }
       if (buffer.push(view, now)) history.clear(); // 새 generation: 이전 그래프 비움
       state.latest = view;
       history.add(view);
@@ -302,7 +309,7 @@ function boot(demoConfig: DemoConfig): void {
     provenance.onFrame(now);
     if (now - provRenderedAt >= PROVENANCE_RENDER_MS) {
       provRenderedAt = now;
-      panel.renderProvenance(provenance.metrics(now));
+      panel.renderProvenance(provenance.metrics(now), state.latest?.auto ?? null);
     }
     const d = buffer.sample(now);
     const lock = lockReason();
@@ -323,6 +330,7 @@ function boot(demoConfig: DemoConfig): void {
         state.shownStale = stale;
         panel.render(d.current, { stale, link: linkLabel(state.link) });
         keys.render(d.current, state.pressed, state.lock);
+        autoView.render(d.current);
         // 세대·frame·재생 상태는 디버그 창에서만
         dbgStatus.textContent = `gen ${d.current.generation} · frame ${d.current.frameSeq} · tick ${d.current.sampleTick} · 그래프 표본 ${history.size} · ${playbackLabel()}`;
       }
@@ -415,7 +423,14 @@ function boot(demoConfig: DemoConfig): void {
     sel.innerHTML = '<option>서버 모드 (?source=server)</option>';
     sel.disabled = true;
     provenance.setSource('server');
-    void serverSource.start();
+    // 자동 모드를 지원하는 서버만 시작 카드 (엔진·조종 방식). 아니면(목업·health 실패) 기존처럼 바로 {} 로 rule 세션
+    void (async () => {
+      if (!(await fetchAutoDriveAvailable(SERVER_BASE_URL))) return serverSource.start();
+      connUi.hide();
+      const opts = await showStartCard(cfg.availableSolvers);
+      state.autoRequested = !!opts.auto;
+      return serverSource.start(createSessionBody(opts));
+    })();
   } else {
     // 샘플 모드: 샘플 재생(기본) 또는 정적 확인 프레임
     sel.innerHTML = '<option value="play">샘플 재생 (90초 타임라인 반복)</option>'

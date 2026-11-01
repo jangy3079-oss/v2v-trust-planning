@@ -2,7 +2,7 @@
  * 사용자 화면 문구 (오류·정지·운전 잠금). 문구는 이 파일에서만 고친다.
  * 서버가 보낸 message·details 는 화면에 그대로 내보내지 않는다 (콘솔·디버그 로그에만). stack trace 노출 금지.
  */
-import type { ErrorCode, PauseReason } from '../contracts';
+import type { AutoDriveLevel, AutoDriveState, AutoStopReason, ErrorCode, PauseReason, Solver } from '../contracts';
 
 export interface ErrorText { title: string; body: string }
 
@@ -44,3 +44,53 @@ export const LOCK_TEXT = {
   completion: '누르고 있던 키를 떼면 운전 입력 시작',
   rateLimited: '전송 줄임 · 요청 과다',
 };
+
+// ---- 자동 모드 (명세 1.3, v1.5). 서버 auto.log 의 text 는 서버 문자열 그대로 표시한다 ----
+// 시작 카드 (서버 모드 · auto_drive_available=true 일 때만)
+export const START_TEXT = {
+  title: '세션 시작',
+  solver: '자차 계산 엔진',
+  solverName: { rule: 'rule (기본)', nmpc: 'nmpc' } satisfies Record<Solver, string>,
+  mode: '이웃차 조종',
+  direct: '직접 조종',
+  auto: '자동 모드 (가상 운전자)',
+  autoNmpc: '자동 모드는 rule에서만 검증되었습니다',
+  level: '위험도',
+  seed: '시드 (선택)',
+  seedPlaceholder: '비우면 서버가 정함',
+  seedInvalid: '시드는 0 이상의 정수입니다',
+  tutorialNote: '안내를 끝내면 자동 주행이 시작됩니다 (안내는 건너뛸 수 없습니다).',
+  randomNote: '무작위·시드는 가상 운전자의 입력 순서에만 쓰입니다. 시뮬레이션 잡음은 매번 같습니다.',
+  go: '시작',
+};
+
+export const AUTO_LEVEL: Record<AutoDriveLevel, string> = { low: '낮음', normal: '보통', high: '높음', random: '무작위' };
+export const AUTO_STATE: Record<AutoDriveState, string> = {
+  cruise: '보통 주행 (첫 대기 전)', wait: '다음 이벤트 대기', event: '이벤트 중', recover: '회복 중', manual: '직접 조종으로 바뀜',
+};
+export const AUTO_STOP: Record<AutoStopReason, string> = { human_input: '사람 키 입력', human_command: '사람 명령(Q/E·1~5·0)' };
+// 데이터 근거 탭의 좁은 칸용 (전체 문구는 툴팁과 주행 화면 도크에)
+export const AUTO_STOP_SHORT: Record<AutoStopReason, string> = { human_input: '사람 키 입력', human_command: '사람 명령' };
+export const AUTO_CUT_IN = '차로 진입'; // event_kind 의 cut_in (나머지는 DemoConfig 시나리오 이름)
+
+export const AUTO_TEXT = {
+  status: '자동',
+  levelRandomNow: (now: string) => `무작위 · 지금 ${now}`,
+  nextIn: (s: number) => `다음 이벤트까지 ${s.toFixed(1)}초`,
+  manualBack: 'R을 누르면 자동 주행으로 돌아갑니다',
+  tutorialLine: '자동 모드: 안내를 끝내면 가상 운전자가 이웃차를 운전합니다. 키를 누르면 직접 조종으로 바뀝니다.',
+  unsupported: '자동 모드를 지원하지 않아 직접 조종으로 시작했습니다',
+  stopButtonTip: '자동 주행 중에 누르면 직접 조종으로 바뀝니다',
+  driverKeys: '운전자 키',
+  driverKeysTip: '가상 운전자가 이번 스텝에 넣은 키 (서버 held_applied)',
+  // 데이터 근거 탭
+  source: '입력 출처',
+  sourceAuto: '자동 (가상 운전자)',
+  sourceManualBack: (reason: string) => `직접 조종 · ${reason}`,
+  sourceManualBackTip: '자동 세션에서 사람이 개입해 직접 조종으로 바뀌었습니다. R을 누르면 자동 주행으로 돌아갑니다.',
+  seedLevel: (seed: number, level: string) => `시드 ${seed} · 위험도 ${level}`,
+  log: '자동 기록',
+  logTip: '자동 운전 기록 — 최근 20개, 서버가 보낸 문구 그대로',
+  logEmpty: '(기록 없음)',
+};
+

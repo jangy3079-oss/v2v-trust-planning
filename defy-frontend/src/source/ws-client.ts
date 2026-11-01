@@ -12,11 +12,11 @@
  * 세션 토큰은 이 모듈 메모리에만 둔다 (URL·로그·localStorage 에 넣지 않음). 응답 필드는 contract-access.ts 로만 읽는다.
  */
 import type {
-  ClientMessage, CommandMessage, CreateSessionResponse, DemoConfig, DemoEvent, ErrorResponse, EventsResponse,
-  HistoryResponse, ServerMessage, Snapshot,
+  ClientMessage, CommandMessage, CreateSessionRequest, CreateSessionResponse, DemoConfig, DemoEvent, ErrorResponse, EventsResponse,
+  HealthResponse, HistoryResponse, ServerMessage, Snapshot,
 } from '../contracts';
 import {
-  readApiError, readCreateSession, readEventsResponse, readHistory, readSentCommand, readServerMessage, snapshotOrder,
+  readApiError, readCreateSession, readEventsResponse, readHealth, readHistory, readSentCommand, readServerMessage, snapshotOrder,
   type GraphPointView,
 } from '../contract-access';
 import { helloMessage } from '../input/messages';
@@ -103,6 +103,17 @@ export async function fetchDemoConfig(base: string): Promise<DemoConfig> {
   const res = await fetch(`${base}/demo-config`, { cache: 'no-store' });
   if (!res.ok) throw await httpFail(res);
   return (await res.json()) as DemoConfig;
+}
+
+// GET /health: 자동 모드 지원 여부 (명세 5, v1.4). 실패하면 지원하지 않는 것으로 본다 (시작 카드 없이 기존 흐름)
+export async function fetchAutoDriveAvailable(base: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${base}/health`, { cache: 'no-store' });
+    if (!res.ok) return false;
+    return readHealth((await res.json()) as HealthResponse).autoDriveAvailable === true;
+  } catch {
+    return false;
+  }
 }
 
 interface PendingCommand { message: CommandMessage; generation: number; sentAt: number; retries: number; checking: boolean }
@@ -322,14 +333,15 @@ export function createServerSource(base: string, sink: ServerSink, opts: ServerS
   }, 250);
 
   return {
-    async start(): Promise<void> {
+    // body: 생성 요청 본문 (contract-access.createSessionBody). 직접 조종 + rule 은 {} (solver 생략 → rule)
+    async start(body: CreateSessionRequest = {}): Promise<void> {
       link({ state: 'connecting', step: '세션 생성 (POST /sessions)' });
       try {
         // 같은 Idempotency-Key 로 재요청해야 중복 생성되지 않는다 (429 대기 후 재요청 포함)
         const res = await fetchWithRetryAfter(`${base}/sessions`, {
           method: 'POST',
           headers: { 'content-type': 'application/json', 'Idempotency-Key': globalThis.crypto.randomUUID() },
-          body: JSON.stringify({}), // solver 생략 → rule
+          body: JSON.stringify(body),
         }, sink.onRateLimited);
         if (res.status !== 201) throw await httpFail(res);
         const created = readCreateSession((await res.json()) as CreateSessionResponse);

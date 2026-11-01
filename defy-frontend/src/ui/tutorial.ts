@@ -7,6 +7,7 @@
  * - 클릭 1회 = onAdvanceClick 1회. 키 진행·R 우선은 input/controller.ts 가 처리한다.
  */
 import type { ConfigView, SnapshotView } from '../contract-access';
+import { AUTO_TEXT } from './text-ko';
 
 // 웹 추가 보조 줄 (합의 사항): 2단계에 덧붙인다. 본문은 DemoConfig.tutorial 문구 그대로
 const EXTRA_NOTE: Partial<Record<number, string>> = {
@@ -46,6 +47,18 @@ export function createTutorialOverlay(cfg: ConfigView, onAdvanceClick: () => voi
   root.addEventListener('click', e => { e.preventDefault(); onAdvanceClick(); });
 
   let shownStep: number | null = null;
+  // 자동 세션만: 말풍선에 한 줄 (서버 안내 본문은 그대로). 처음 필요할 때 만든다 → 수동 세션 DOM 은 그대로
+  let autoLine: HTMLElement | null = null;
+  function showAutoLine(on: boolean): void {
+    if (!on && !autoLine) return;
+    if (!autoLine) {
+      autoLine = document.createElement('div');
+      autoLine.className = 'tut-auto';
+      autoLine.textContent = AUTO_TEXT.tutorialLine;
+      bubble.insertBefore(autoLine, footEl);
+    }
+    autoLine.hidden = !on;
+  }
 
   // 강조 키마다 구멍 상자 (실제 요소 위치)
   function holeRects(codes: readonly string[]): Rect[] {
@@ -97,6 +110,7 @@ export function createTutorialOverlay(cfg: ConfigView, onAdvanceClick: () => voi
       if (step == null) { shownStep = null; return; }
       const t = cfg.tutorial.find(x => x.step === step);
       if (!t) return;
+      showAutoLine(!!v?.auto);
       if (shownStep !== step) {
         shownStep = step;
         const total = cfg.tutorial.length, last = step === total - 1;

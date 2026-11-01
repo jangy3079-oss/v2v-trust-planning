@@ -30,6 +30,12 @@ import type {
   Solver,
   PauseReason,
   ErrorCode,
+  AutoDriveLevel,
+  AutoDriveState,
+  AutoDriveStatus,
+  AutoStopReason,
+  CreateSessionRequest,
+  HealthResponse,
 } from './contracts';
 
 export interface ConfigView {
@@ -48,6 +54,7 @@ export interface ConfigView {
   tutorial: { step: TutorialStep; highlightCodes: string[]; text: string }[];
   banner: string;
   kDrainDefault: number;
+  availableSolvers: Solver[];
 }
 
 export interface VehicleView {
@@ -185,6 +192,20 @@ export interface SnapshotView {
     resumePhase: 'tutorial' | 'running' | null;
     error: { code: ErrorCode; message: string } | null;
   };
+  auto: AutoView | null;
+}
+
+// 자동 모드 (명세 1.3, v1.5). Snapshot.auto 가 없거나 enabled=false 면 null (수동 세션)
+export interface AutoView {
+  seed: number;
+  levelSetting: AutoDriveLevel;
+  level: AutoDriveStatus['level'];
+  state: AutoDriveState;
+  stoppedReason: AutoStopReason | null;
+  eventKind: string | null;
+  nextEventIn: number | null;
+  edgeMargin: number;
+  log: { t: number; text: string }[];
 }
 
 // 데이터 근거 탭용: 서버가 보낸 값의 출처·순서·입력 반영을 확인하는 필드 (view/provenance.ts 가 사용)
@@ -212,6 +233,24 @@ export function readProvenance(s: Snapshot): ProvenanceView {
     lastReceivedInputSeq: inp.last_received_input_seq, lastAppliedInputSeq: inp.last_applied_input_seq,
     inputConnectionId: inp.input_connection_id, heldApplied: inp.held_applied,
   };
+}
+
+// GET /health: 자동 모드 지원 여부만 쓴다
+export function readHealth(h: HealthResponse): { ready: boolean; autoDriveAvailable: boolean } {
+  return { ready: h.ready, autoDriveAvailable: h.auto_drive_available };
+}
+
+// POST /sessions 본문. 직접 조종 + rule 이면 기존과 같은 {} (생략 = 서버 기본값)
+export interface SessionOptions { solver: Solver; auto: { level: AutoDriveLevel; seed: number | null } | null }
+export function createSessionBody(o: SessionOptions): CreateSessionRequest {
+  const body: CreateSessionRequest = {};
+  if (o.solver !== 'rule') body.solver = o.solver;
+  if (o.auto) {
+    body.auto_drive = true;
+    body.auto_level = o.auto.level;
+    if (o.auto.seed != null) body.auto_seed = o.auto.seed; // 비우면 서버가 정한다
+  }
+  return body;
 }
 
 // 내가 보낸 input.state 의 순번·눌림 (다른 type 이면 null)
@@ -314,6 +353,7 @@ export function readConfig(c: DemoConfig): ConfigView {
     tutorial: c.tutorial.map(t => ({ step: t.step, highlightCodes: t.highlight_codes, text: t.text })),
     banner: c.banner,
     kDrainDefault: c.defaults.k_drain,
+    availableSolvers: c.available_solvers,
   };
 }
 
@@ -389,5 +429,10 @@ export function readSnapshot(s: Snapshot): SnapshotView {
       connected: rt.connected, stepMs: rt.step_ms, lagMs: rt.lag_ms, pauseReason: rt.pause_reason, resumePhase: rt.resume_phase,
       error: rt.error && { code: rt.error.code, message: rt.error.message },
     },
+    auto: s.auto && s.auto.enabled ? {
+      seed: s.auto.seed, levelSetting: s.auto.level_setting, level: s.auto.level, state: s.auto.state,
+      stoppedReason: s.auto.stopped_reason ?? null, eventKind: s.auto.event_kind, nextEventIn: s.auto.next_event_in_s,
+      edgeMargin: s.auto.edge_margin_m, log: s.auto.log.map(l => ({ t: l.t_s, text: l.text })),
+    } : null,
   };
 }
