@@ -2,6 +2,7 @@
  * 15c web demo protocol v1 — implementation contract, not an existing server.
  * Spec 1.2 (v15c-fix): lane-anchored ego targets, NMPC as planner (policy_target_y_m / nmpc_override added).
  * Spec 1.4: optional auto drive (server-side virtual driver for the neighbor). Additive only; protocol stays v1.
+ * Spec 1.5: auto drive risk level, server-chosen seed, hand-back to manual on human input. Additive only.
  * Normative behavior: WEB_DEMO_TECH_SPEC.md.
  * JSON numbers must be finite; integer IDs/cursors must be safe integers.
  * All object fields are required unless marked ?. Unknown request fields fail.
@@ -138,9 +139,11 @@ export interface DemoConfig {
 }
 
 // POST /api/v1/sessions. Header Idempotency-Key: UUID required.
-// 1.4: auto_drive (default false) lets the server drive the neighbor; auto_seed is a safe integer >= 0 (default 0)
-// that seeds only the virtual driver. Both take part in the Idempotency-Key body comparison.
-export interface CreateSessionRequest { solver?: Solver; auto_drive?: boolean; auto_seed?: number }
+// 1.4: auto_drive (default false) lets the server drive the neighbor; auto_seed is a safe integer >= 0
+// that seeds only the virtual driver. 1.5: auto_seed omitted → the server picks one and reports it in Snapshot.auto.seed;
+// auto_level (default "normal") sets the event interval. The Idempotency-Key body comparison uses auto_drive/auto_seed/
+// auto_level exactly as sent (omitted stays omitted); solver keeps its default-filled comparison.
+export interface CreateSessionRequest { solver?: Solver; auto_drive?: boolean; auto_seed?: number; auto_level?: AutoDriveLevel }
 export interface CreateSessionResponse {
   protocol_version: ProtocolVersion;
   session_id: string;
@@ -318,11 +321,19 @@ export interface ScenarioReport {
 
 // 1.4 auto drive. cruise = before the first countdown, wait = counting down to the next event,
 // event = an event is running, recover = event over, waiting for the recovery condition.
-export type AutoDriveState = "cruise" | "wait" | "event" | "recover";
+// 1.5: manual = a human input/command took over; the driver stays off until reset (R) brings it back.
+export type AutoDriveState = "cruise" | "wait" | "event" | "recover" | "manual";
+// 1.5: random switches among low/normal/high every 30–60 s.
+export type AutoDriveLevel = "low" | "normal" | "high" | "random";
+// 1.5: why the driver handed back to manual. human_input = non-empty held/tapped, human_command = signal.toggle/scenario.*
+export type AutoStopReason = "human_input" | "human_command";
 export interface AutoDriveStatus {
   enabled: boolean; // false: manual session (other fields are inert)
-  seed: number;
+  seed: number; // 1.5: the server-chosen seed when the request omitted auto_seed
+  level_setting: AutoDriveLevel; // 1.5: as requested (default normal)
+  level: "low" | "normal" | "high"; // 1.5: level in effect now (changes over time when level_setting is random)
   state: AutoDriveState;
+  stopped_reason?: AutoStopReason | null; // 1.5: set only in manual
   event_kind: string | null; // ScenarioKind or "cut_in"; null outside event/recover
   next_event_in_s: number | null; // only in wait
   edge_margin_m: number; // 5.25 − (|neighbor y| + 0.9): distance from the neighbor body to the road edge
@@ -371,7 +382,8 @@ export interface Snapshot {
     resume_phase: "tutorial" | "running" | null;
     error: ApiError | null;
   };
-  // 1.4: absent from pre-1.4 servers. In auto mode inputs.held_applied are the driver's keys and held_received is [].
+  // 1.4: absent from pre-1.4 servers. While the driver is in control (auto.state ≠ manual) inputs.held_applied are the
+  // driver's keys and held_received is []. 1.5: after a hand-back (manual) inputs behave as in a manual session.
   auto?: AutoDriveStatus;
 }
 
