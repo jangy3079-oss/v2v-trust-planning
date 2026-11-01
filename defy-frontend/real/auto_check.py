@@ -11,7 +11,6 @@ import importlib.util
 import json
 import os
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -118,16 +117,17 @@ def compare(args):
 
 
 # ---- 자동 모드
-def run_auto(seed, level, minutes, solver="rule", real=HERE, quiet=False):
+def run_auto(seed, level, minutes, solver="rule", real=HERE, quiet=False, sid="check"):
+    """실제 서버와 같은 기록 파일(real/logs/auto_<세션>_<seed>.jsonl)을 남기며 운전자만 돌린다."""
     b = load_bridge(real)
-    with tempfile.TemporaryDirectory() as td:
-        b.new(solver, dict(seed=seed, level=level, session_id="check", log=False))
+    log = Path(real) / "logs" / f"auto_{sid}_{seed}.jsonl"
+    log.unlink(missing_ok=True)
+    if True:
+        b.new(solver, dict(seed=seed, level=level, session_id=sid))
         drv = b.driver
-        drv.log_path = Path(td) / "sched.jsonl"
-        drv.reset()  # 기록 파일을 붙인 뒤 처음부터
         LAT = ("drift", "stuck", "weave")
         n = int(minutes * 60 / DT)
-        bad_ad, min_margin, levels, states = [], 9.9, set(), {}
+        bad_ad, min_margin, levels, states, departures = [], 9.9, set(), {}, 0
         for _ in range(n):
             P = b.step([], [])
             sc = P["scenario"]
@@ -135,6 +135,7 @@ def run_auto(seed, level, minutes, solver="rule", real=HERE, quiet=False):
                 bad_ad.append(P["auto"]["log"][-1:] if P["auto"]["log"] else sc["kind"])
             y = P["vehicles"]["neighbor"]["y_m"]
             min_margin = min(min_margin, 5.25 - (abs(y) + 0.9))
+            departures += 5.25 - (abs(y) + 0.9) < 0  # 차체가 도로 끝을 넘은 틱
             levels.add(P["auto"]["level"])
             states[P["auto"]["state"]] = states.get(P["auto"]["state"], 0) + 1
         recs = [json.loads(l) for l in open(drv.log_path, encoding="utf-8")]
@@ -142,7 +143,8 @@ def run_auto(seed, level, minutes, solver="rule", real=HERE, quiet=False):
     kinds = {}
     for r in starts:
         kinds[r["event"]] = kinds.get(r["event"], 0) + 1
-    res = dict(seed=seed, level=level, minutes=minutes, events=len(starts), kinds=kinds, bad_ad=len(bad_ad), min_margin=round(min_margin, 3),
+    res = dict(seed=seed, level=level, minutes=minutes, events=len(starts), kinds=kinds, bad_ad=len(bad_ad), min_margin=round(min_margin, 3), departures=departures,
+               log=str(drv.log_path), switches=sum(1 for r in recs if r.get("text", "").startswith("위험도")),
                levels=sorted(levels), states=states, coll=P["ego_control"]["collision_count"],
                skipped=sum(1 for r in recs if "건너뜀" in r.get("text", "")), timeouts=sum(1 for r in recs if "초과" in r.get("text", "")))
     if not quiet:
@@ -154,22 +156,54 @@ def sched_key(recs):
     return [{k: v for k, v in r.items() if k not in ("session_id",)} for r in recs]
 
 
+def event_seq(recs):
+    return [(r["tick"], r["t_s"], r["text"]) for r in recs if r["type"] == "note"]
+
+
 def auto_suite(args):
     m = args.minutes
-    r1, s1 = run_auto(7, "normal", m, quiet=True)
-    r2, s2 = run_auto(7, "normal", m, quiet=True)
-    same = sched_key(s1) == sched_key(s2)
-    print(f"같은 시드 두 번: {'일치' if same else '불일치'} (기록 {len(s1)}줄 / {len(s2)}줄)")
-    r3, s3 = run_auto(8, "normal", m, quiet=True)
+    r1, s1 = run_auto(7, "normal", m, quiet=True, sid="checkA")
+    r2, s2 = run_auto(7, "normal", m, quiet=True, sid="checkB")
+    e1, e2 = event_seq(s1), event_seq(s2)
+    print(f"같은 시드 두 번 (기록 파일 {Path(r1['log']).name} / {Path(r2['log']).name}): 이벤트 순서·시각 {'일치' if e1 == e2 else '불일치'} ({len(e1)}건), "
+          f"입력까지 전체 {'일치' if sched_key(s1) == sched_key(s2) else '불일치'} ({len(s1)}줄)")
+    r3, s3 = run_auto(8, "normal", m, quiet=True, sid="checkC")
     print(f"다른 시드(8): {'다름' if sched_key(s3) != sched_key(s1) else '같음(!)'}")
     out = {}
     for lv in ("low", "normal", "high", "random"):
-        r, _ = run_auto(7, lv, m, quiet=True) if lv != "normal" else (r1, s1)
+        r, _ = run_auto(7, lv, m, quiet=True, sid=f"check{lv}") if lv != "normal" else (r1, s1)
         out[lv] = r
         print(json.dumps(r, ensure_ascii=False))
     ok = out["low"]["events"] < out["normal"]["events"] < out["high"]["events"]
     print(f"이벤트 횟수 low {out['low']['events']} < normal {out['normal']['events']} < high {out['high']['events']}: {'통과' if ok else '실패'}")
     print(f"random 단계 전환: {out['random']['levels']}")
+
+
+def handback_check(args):
+    """사람 개입 정리: 운전자가 건 횡 시나리오는 0 으로 해제, 운전자가 켠 깜빡이는 끔, 그 스텝부터 사람 키만."""
+    b = load_bridge(HERE)
+    out = {}
+    for want in ("lateral", "signal"):
+        found = None
+        for seed in range(1, 40):
+            b.new("rule", dict(seed=seed, level="high", session_id="handback", log=False))
+            for _ in range(int(10 * 60 / DT)):
+                P = b.step([], [])
+                d, sc = b.driver, P["scenario"]
+                if want == "lateral" and sc and sc["kind"] in ("drift", "stuck", "weave") and d.phase == "run":
+                    found = seed; break
+                if want == "signal" and d.my_signal and P["vehicles"]["neighbor"]["signal_side"] != "off":
+                    found = seed; break
+            if found:
+                break
+        P = b.step(["W"], [], "human_input")
+        out[want] = dict(seed=found, scenario_after=P["scenario"]["kind"] if P["scenario"] else None, auto_stop=P["auto_stop"],
+                         signal_after=P["vehicles"]["neighbor"]["signal_side"], held_used=P["auto_held"], state=P["auto"]["state"],
+                         reason=P["auto"]["stopped_reason"])
+        print(want, json.dumps(out[want], ensure_ascii=False))
+    ok = (out["lateral"]["scenario_after"] is None and out["lateral"]["auto_stop"] and out["signal"]["signal_after"] == "off"
+          and all(o["held_used"] == ["W"] and o["state"] == "manual" for o in out.values()))
+    print("수동 복귀 정리:", "통과" if ok else "실패")
 
 
 def main():
@@ -180,6 +214,7 @@ def main():
     u = sp.add_parser("auto"); u.add_argument("--seed", type=int, default=7); u.add_argument("--level", default="normal")
     u.add_argument("--minutes", type=float, default=5); u.add_argument("--solver", default="rule"); u.add_argument("--out")
     s = sp.add_parser("auto-suite"); s.add_argument("--minutes", type=float, default=5)
+    sp.add_parser("handback")
     args = ap.parse_args()
     if args.mode == "manual":
         run_manual(args)
@@ -191,6 +226,8 @@ def main():
             with open(args.out, "w", encoding="utf-8") as f:
                 for r in recs:
                     f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    elif args.mode == "handback":
+        handback_check(args)
     else:
         auto_suite(args)
 

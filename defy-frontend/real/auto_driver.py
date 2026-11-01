@@ -22,10 +22,17 @@ AUTO = dict(
     edge_min_m=0.5,
     lane_keep_m=(0.5, 0.15),             # 차로 유지: 중심에서 이만큼 벗어나면 조향 시작, 이 안이면 멈춤
     steer_deadband_m=0.15,               # 횡 목표 추종: 예측 정지 위치 오차 데드밴드
+    steer_predict_s=(3.0, 2.0),          # 예측 정지 위치 y + v·(Tψ·ψ + Tr·r_cmd) 의 (Tψ, Tr) [s]. 키 반전 램프·차량 지연까지 덮도록 크게 (seed 7~11 × normal/high 에서 최소 여유가 가장 큼)
     gap_cruise_m=40.0, gap_hold_m=8.0,   # 평소 앞뒤 간격 목표(자차 기준 dx)와 그대로 두는 폭
     gap_approach_m=25.0, gap_approach_tol_m=5.0, approach_timeout_s=10.0,  # 이벤트 전 접근
     speed_gain=0.15, speed_rel_max=2.5, speed_deadband=0.5,  # 간격 → 원하는 상대 속도 [1/s, m/s, m/s]
-    align_timeout_s=5.0,                 # 횡방향 시나리오 전 차로 중심 맞추기, 넘으면 이번 이벤트 건너뜀
+    align_timeout_s=8.0,                 # 횡방향 시나리오 전 시작 위치 맞추기, 넘으면 이번 이벤트 건너뜀
+    # 위빙: 표의 진폭은 목표값이고 실제 흔들림은 비대칭이며 더 크다(명세 2.3). 12초 동안 잰 한쪽 최대 흔들림(올림) [m].
+    # 바깥으로 흔들려도 여유 하한이 남도록 이만큼 중앙 쪽에서 시작한다 (1.2 m 단계는 자차 차로 경계 근처에서 시작)
+    weave_excursion_m={0.5: 1.1, 0.8: 0.9, 1.2: 2.6},
+    # 위빙 해제 시점: 흔들림 끝(방향각 ≈ 0)에서 풀면 횡 운동량 없이 그 자리에 선다. 여유가 하한 + 이 값보다 작은
+    # 흔들림 끝에서 해제한다. 예측 여유가 0 아래로 가면(곧 도로 밖) 시점과 관계없이 바로 해제한다
+    weave_release_buffer_m=1.0, weave_still_rad=0.005,
     signal_lead_s=1.0,                   # cut_in: 깜빡이 켠 뒤 조향까지
     cut_in_steer_timeout_s=8.0, cut_in_hold_s=3.0,
     recover_tol_m=0.5,                   # 회복 완료: 자기 차로 중심 ±0.5 m (명세 1.3)
@@ -88,11 +95,16 @@ class AutoDriver:
     # ---- 읽는 값 (참 상태)
     def view(self, ses):
         sim = ses.sim
+        self.sim_weave_i = int(sim.weave_i)  # 다음 위빙 강도 (누를 때마다 순환)
         x, y, psi, v = (float(t) for t in sim.neighbor_vehicle.state)
         ex, ey, _, ev = (float(t) for t in sim.ego)
         W = self.W
+        r_cmd = float(sim.keyboard.r_cmd)
+        tp, tr = AUTO["steer_predict_s"]
+        y_stop = y + v * (tp * psi + tr * r_cmd)  # 지금 키를 떼면 멈출 y (횡 운동량 포함)
+        edge = lambda yy: AUTO["road_edge_m"] - (abs(yy) + AUTO["half_width_m"])
         return dict(x=x, y=y, psi=psi, v=v, dx=x - ex, ego_v=ev, ego_c=W * round(ey / W), lane_c=W * round(y / W),
-                    margin=AUTO["road_edge_m"] - (abs(y) + AUTO["half_width_m"]), r_cmd=float(sim.keyboard.r_cmd),
+                    margin=edge(y), y_stop=y_stop, margin_pred=min(edge(y), edge(y_stop)), r_cmd=r_cmd,
                     a_user=float(sim.a_user), inj=sim.inj, sig="Q" if sim.sig_l else "E" if sim.sig_r else None,
                     ego_state=str(ses.ctl.info.get("state", "NORMAL")).upper())
 
@@ -102,8 +114,7 @@ class AutoDriver:
     # ---- 키 생성 보조
     def steer_to(self, s, y_tgt):
         """예측 정지 위치(키를 지금 떼면 멈출 y)로 A/D 결정. A=+y(왼쪽), D=−y."""
-        y_stop = s["y"] + s["v"] * self.T_PSI * (s["psi"] + self.R_REL * s["r_cmd"])
-        err = y_tgt - y_stop
+        err = y_tgt - s["y_stop"]
         db = AUTO["steer_deadband_m"]
         return "A" if err > db else "D" if err < -db else None
 
@@ -123,11 +134,10 @@ class AutoDriver:
         return "W" if rel < want - db else "S" if rel > want + db else None
 
     def guard(self, s, steer):
-        """도로 이탈 방지: 여유가 하한보다 작으면 바깥쪽 키 금지·안쪽으로."""
-        if s["margin"] >= AUTO["edge_min_m"]:
+        """도로 이탈 방지: 여유(지금 또는 예측 정지 위치)가 하한보다 작으면 바깥쪽 키 금지·안쪽으로."""
+        if s["margin_pred"] >= AUTO["edge_min_m"]:
             return steer
-        inward = "D" if s["y"] > 0 else "A"
-        return inward
+        return "D" if s["y"] > 0 else "A"
 
     # ---- 단계 (random)
     def update_level(self, t, k):
@@ -184,7 +194,8 @@ class AutoDriver:
         elif self.state == "recover":
             steer = self.steer_to(s, self.home_c) if s["inj"] is None or s["inj"]["kind"] not in LATERAL else None
             speed = self.speed_to(s, AUTO["gap_cruise_m"], AUTO["gap_hold_m"]) if s["inj"] is None else None
-            ok = s["inj"] is None and s["sig"] is None and abs(s["y"] - self.home_c) <= AUTO["recover_tol_m"] and s["ego_state"] == "NORMAL"
+            near = max(abs(s["y"] - self.home_c), abs(s["y_stop"] - self.home_c)) <= AUTO["recover_tol_m"]  # 지나쳐 가는 중이면 아직
+            ok = s["inj"] is None and s["sig"] is None and near and s["ego_state"] == "NORMAL"
             if ok:
                 self.note(t, k, "회복 완료")
                 self.start_wait(t, k)
@@ -202,7 +213,7 @@ class AutoDriver:
         if lateral_now:
             steer = None
         else:
-            steer = self.guard(s, steer) if (steer is not None or s["margin"] < AUTO["edge_min_m"]) else None
+            steer = self.guard(s, steer) if (steer is not None or s["margin_pred"] < AUTO["edge_min_m"]) else None
         held = {x for x in (steer, speed) if x}
         if tuple(sorted(held)) != self.prev_held or keys:
             self.record(dict(type="input", tick=k, held=sorted(held), keys=keys, state=self.state, event=self.event, level=self.level), t)
@@ -218,6 +229,7 @@ class AutoDriver:
             if abs(s["dx"] - AUTO["gap_approach_m"]) < AUTO["gap_approach_tol_m"] or el >= AUTO["approach_timeout_s"]:
                 speed = None
                 if ev in LATERAL:
+                    self.target_y = None
                     self.set_phase("align", k)
                 elif ev == "cut_in":
                     tgt = s["ego_c"] if s["ego_c"] != self.home_c else (self.home_c - math.copysign(self.W, self.home_c) if self.home_c else self.W)
@@ -238,8 +250,12 @@ class AutoDriver:
                     self.my_inj_k0 = k
                     self.note(t, k, f"{NAME[ev]} 시작", key=KEY_OF[ev])
         elif self.phase == "align":
-            # 횡방향 시나리오는 이웃이 도로 중앙 쪽(자기 차로 중심 근처, 여유 충분)일 때만 시작
-            ready = abs(s["y"] - s["lane_c"]) <= AUTO["recover_tol_m"] and s["margin"] >= AUTO["edge_min_m"]
+            # 횡방향 시나리오는 이웃이 도로 중앙 쪽일 때만 시작. drift/stuck 은 자기 차로 중심(원본 방향이 도로 가운데 쪽),
+            # weave 는 양쪽으로 흔들리므로 바깥으로 흔들려도 여유가 남는 위치까지 중앙 쪽으로 옮긴 뒤
+            if self.target_y is None:
+                self.target_y = self.start_y(s, ev)
+            tgt = self.target_y
+            ready = abs(s["y"] - tgt) <= 0.2 and abs(s["y_stop"] - tgt) <= 0.3 and s["margin_pred"] >= AUTO["edge_min_m"]
             if ready:
                 keys.append(KEY_OF[ev])
                 self.set_phase("run", k)
@@ -250,7 +266,7 @@ class AutoDriver:
                 self.state = "recover"
                 self.set_phase("recover", k)
             else:
-                steer = self.steer_to(s, s["lane_c"])
+                steer = self.steer_to(s, tgt)
         elif self.phase == "signal":
             steer = self.lane_keep(s, self.home_c)
             if el >= AUTO["signal_lead_s"]:
@@ -272,9 +288,16 @@ class AutoDriver:
             if ev in LATERAL:
                 if not mine:
                     self.begin_recover(t, k)
-                elif s["margin"] < AUTO["edge_min_m"]:
+                elif ev == "weave" and ((abs(s["psi"]) < AUTO["weave_still_rad"] and s["margin"] < AUTO["edge_min_m"] + AUTO["weave_release_buffer_m"])
+                                        or s["margin_pred"] < 0):
+                    # 흔들림 도중(방향각이 클 때) 풀면 그 방향 운동량이 남아 더 나가므로 흔들림 끝에서 푼다
                     keys.append("0")
-                    self.note(t, k, f"{NAME[ev]} 해제 (가장자리 여유 {s['margin']:.2f} m)", key="0")
+                    self.note(t, k, f"{NAME[ev]} 해제 (흔들림 끝, 가장자리 여유 {s['margin']:.2f} m)", key="0")
+                    self.my_inj_k0 = None
+                    self.begin_recover(t, k)
+                elif ev != "weave" and s["margin_pred"] < AUTO["edge_min_m"]:
+                    keys.append("0")
+                    self.note(t, k, f"{NAME[ev]} 해제 (가장자리 여유 {s['margin']:.2f} m, 예측 {s['margin_pred']:.2f} m)", key="0")
                     self.my_inj_k0 = None
                     self.begin_recover(t, k)
                 elif el >= AUTO["scenario_s"][ev] - 1e-9:
@@ -287,6 +310,18 @@ class AutoDriver:
                 self.my_inj_k0 = None
                 self.begin_recover(t, k)
         return keys, steer, speed
+
+    def start_y(self, s, ev):
+        c = s["lane_c"]
+        if ev != "weave" or c == 0:
+            return c
+        amp = self.SM.WEAVE_LEVELS[self.weave_i_of(s)][0]
+        need = AUTO["weave_excursion_m"][amp] + AUTO["half_width_m"] + AUTO["edge_min_m"]
+        shift = max(0.0, need - (AUTO["road_edge_m"] - abs(c)))
+        return c - math.copysign(shift, c)
+
+    def weave_i_of(self, s):
+        return self.sim_weave_i % len(self.SM.WEAVE_LEVELS)
 
     def begin_recover(self, t, k):
         self.state = "recover"
@@ -314,9 +349,9 @@ class AutoDriver:
         return keys
 
     def halt(self, ses, reason):
-        if self.state == "manual" or self.halted is not None:
+        if self.state == "manual":
             return
-        self.halted = reason
+        self.halted = reason  # 재개 전에 다시 멈춰도(예: 정지 직후 끊김) 사유마다 기록
         t = (ses.sim.k + 1) * self.DT
         self.note(t, ses.sim.k + 1, f"정지 ({reason})", reason=reason)
 
