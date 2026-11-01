@@ -3,9 +3,6 @@ import type { ConfigView, ModelView, SnapshotView, VehicleView } from '../contra
 import { FONT_UI } from './theme';
 import { fitCanvas, makeCamera, type Camera } from './camera';
 import { fmt, fmtSigned, kmh, LABEL } from './format';
-import { hitsAny, labelBox, placeVehicleLabel, type ScreenRect } from './label-place';
-
-export type { ScreenRect } from './label-place';
 
 export interface RoadScene {
   ego: VehicleView;   // 표시 시각의 자차 (2단계부터 보간값)
@@ -15,6 +12,10 @@ export interface RoadScene {
   showHud: boolean;   // 속도·v_ref·간격·dx 표 (기본 숨김, 토글). 차량 옆 km/h 라벨은 항상
   avoid: ScreenRect[]; // 캔버스 위에 떠 있는 DOM(왼쪽 아래 도크 등) 영역. 라벨·화면 밖 표식이 피해 간다
 }
+
+export interface ScreenRect { x: number; y: number; w: number; h: number }
+const hitsAny = (rs: readonly ScreenRect[], x: number, y: number, w: number, h: number): ScreenRect | null =>
+  rs.find(r => x < r.x + r.w && r.x < x + w && y < r.y + r.h && r.y < y + h) ?? null;
 
 const BLINK_PERIOD_S = 0.3; // 명세 3.1: 300ms 켬 / 300ms 끔
 const DASH_PERIOD_M = 12;
@@ -58,7 +59,6 @@ export function createRoadView(canvas: HTMLCanvasElement, cfg: ConfigView) {
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('2D canvas 를 사용할 수 없습니다');
   let avoid: ScreenRect[] = [];
-  let labels: ScreenRect[] = []; // 이번 프레임에 먼저 놓인 차량 라벨 (다음 라벨이 피해 간다)
 
   function drawRoadSurface(cam: Camera): void {
     const { W, H } = cam;
@@ -202,17 +202,17 @@ export function createRoadView(canvas: HTMLCanvasElement, cfg: ConfigView) {
       c.fillText('충돌', X, Y - cam.s * 3.6);
     }
 
-    // 이름·속도 라벨: 차량 왼쪽 → 오른쪽 → 아래 → 위 → 가장 가까운 빈자리 (도크·거리 눈금·먼저 놓인 라벨을 피함, label-place.ts)
+    // 이름·속도 라벨: 차량 왼쪽 → (도크와 겹치면) 오른쪽 → (거리 눈금과도 겹치면) 차량 아래
+    let ly = cam.sy(v.x);
     c.font = `600 14px ${FONT_UI}`;
     c.textBaseline = 'middle';
     const text = `${label} ${kmh(v.v)} km/h`;
     const tw = c.measureText(text).width;
     const ticks: ScreenRect = { x: cam.sx(cfg.outerEdges[0]) + 2, y: 0, w: 70, h: cam.H }; // drawRoadSurface 의 거리 눈금 열
-    const { x: x0, y: ly } = placeVehicleLabel({
-      cx: cam.sx(v.y), cy: cam.sy(v.x), side: cam.s * 1.6, halfLen: (v.len / 2) * cam.s, tw,
-      obstacles: [...avoid, ticks, ...labels], W: cam.W, H: cam.H,
-    });
-    labels.push(labelBox(x0, ly, tw));
+    const blocked = (x: number, y: number) => hitsAny([...avoid, ticks], x - 4, y - 11, tw + 8, 22);
+    let x0 = cam.sx(v.y) - cam.s * 1.6 - tw;
+    if (blocked(x0, ly)) x0 = cam.sx(v.y) + cam.s * 1.6;
+    if (blocked(x0, ly)) { x0 = cam.sx(v.y) - tw / 2; ly = cam.sy(v.x) + (v.len / 2) * cam.s + 16; }
     c.fillStyle = 'rgba(0,0,0,.6)';
     c.fillRect(x0 - 4, ly - 11, tw + 8, 22);
     c.fillStyle = color;
@@ -309,7 +309,6 @@ export function createRoadView(canvas: HTMLCanvasElement, cfg: ConfigView) {
 
   function render(scene: RoadScene): void {
     avoid = scene.avoid;
-    labels = [];
     const { W, H } = fitCanvas(canvas, ctx!);
     const cam = makeCamera(W, H, scene.ego.x);
     drawRoadSurface(cam);
