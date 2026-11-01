@@ -27,12 +27,12 @@ AUTO = dict(
     gap_approach_m=25.0, gap_approach_tol_m=5.0, approach_timeout_s=10.0,  # 이벤트 전 접근
     speed_gain=0.15, speed_rel_max=2.5, speed_deadband=0.5,  # 간격 → 원하는 상대 속도 [1/s, m/s, m/s]
     align_timeout_s=8.0,                 # 횡방향 시나리오 전 시작 위치 맞추기, 넘으면 이번 이벤트 건너뜀
-    # 위빙: 표의 진폭은 목표값이고 실제 흔들림은 비대칭이며 더 크다(명세 2.3). 12초 동안 잰 한쪽 최대 흔들림(올림) [m].
-    # 바깥으로 흔들려도 여유 하한이 남도록 이만큼 중앙 쪽에서 시작한다 (1.2 m 단계는 자차 차로 경계 근처에서 시작)
-    weave_excursion_m={0.5: 1.1, 0.8: 0.9, 1.2: 2.6},
-    # 위빙 해제 시점: 흔들림 끝(방향각 ≈ 0)에서 풀면 횡 운동량 없이 그 자리에 선다. 여유가 하한 + 이 값보다 작은
-    # 흔들림 끝에서 해제한다. 예측 여유가 0 아래로 가면(곧 도로 밖) 시점과 관계없이 바로 해제한다
-    weave_release_buffer_m=1.0, weave_still_rad=0.005,
+    # 위빙은 자차 앞(접근 거리), 자차 차로 중심에서 시작한다. 표의 진폭은 목표값이고 실제 흔들림은 한쪽 최대 약 2.6 m(1.2 m 단계,
+    # 명세 2.3)라 바깥 차로에서는 도로를 벗어나지만, 가운데 차로는 양쪽 여유가 5.25 − 0.9 = 4.35 m 라 단계와 관계없이 끝까지 흔들 수 있다.
+    # 바깥 차로에서 자차 차로까지 3.5 m 를 옮기는 제한 시간
+    weave_align_timeout_s=20.0,
+    # 안전망: 지금 풀었을 때 방향각 정렬(원본 Tψ)로 멈출 위치가 도로 밖이면 흔들림 도중이라도 해제한다.
+    # 키보드 예측 계수(steer_predict_s)는 위빙 방향각에서 크게 넘쳐 잡혀 위빙에는 쓰지 않는다
     signal_lead_s=1.0,                   # cut_in: 깜빡이 켠 뒤 조향까지
     cut_in_steer_timeout_s=8.0, cut_in_hold_s=3.0,
     recover_tol_m=0.5,                   # 회복 완료: 자기 차로 중심 ±0.5 m (명세 1.3)
@@ -89,6 +89,7 @@ class AutoDriver:
             f.write(json.dumps(dict(t_s=round(t, 4), **rec), ensure_ascii=False) + "\n")
 
     def note(self, t, k, text, **extra):
+        # extra 의 kind: select(이벤트 고름) / start(시작) / skip(건너뜀) / end(끝, reason) — 집계용 (auto_check)
         self.say(t, text)
         self.record(dict(type="note", tick=k, state=self.state, event=self.event, level=self.level, text=text, **extra), t)
 
@@ -188,7 +189,7 @@ class AutoDriver:
                 self.event = self.rng.choice(AUTO["events"])
                 self.state, self.home_c = "event", s["lane_c"]
                 self.set_phase("approach", k)
-                self.note(t, k, f"이벤트: {NAME[self.event]} (접근)")
+                self.note(t, k, f"이벤트: {NAME[self.event]} (접근)", kind="select")
         elif self.state == "event":
             keys, steer, speed = self.event_step(s, t, k, el)
         elif self.state == "recover":
@@ -239,16 +240,16 @@ class AutoDriver:
                         if s["sig"] != key:
                             keys.append(key)
                         self.my_signal = key
-                        self.note(t, k, f"깜빡이 {'왼쪽' if key == 'Q' else '오른쪽'}", key=key)
+                        self.note(t, k, f"깜빡이 {'왼쪽' if key == 'Q' else '오른쪽'}", key=key, kind="start")
                         self.set_phase("signal", k)
                     else:
-                        self.note(t, k, "깜빡이 없이 진입")
+                        self.note(t, k, "깜빡이 없이 진입", kind="start")
                         self.set_phase("steer", k)
                 else:
                     keys.append(KEY_OF[ev])
                     self.set_phase("run", k)
                     self.my_inj_k0 = k
-                    self.note(t, k, f"{NAME[ev]} 시작", key=KEY_OF[ev])
+                    self.note(t, k, f"{NAME[ev]} 시작", key=KEY_OF[ev], kind="start")
         elif self.phase == "align":
             # 횡방향 시나리오는 이웃이 도로 중앙 쪽일 때만 시작. drift/stuck 은 자기 차로 중심(원본 방향이 도로 가운데 쪽),
             # weave 는 양쪽으로 흔들리므로 바깥으로 흔들려도 여유가 남는 위치까지 중앙 쪽으로 옮긴 뒤
@@ -260,9 +261,11 @@ class AutoDriver:
                 keys.append(KEY_OF[ev])
                 self.set_phase("run", k)
                 self.my_inj_k0 = k
-                self.note(t, k, f"{NAME[ev]} 시작", key=KEY_OF[ev])
-            elif el >= AUTO["align_timeout_s"]:
-                self.note(t, k, f"{NAME[ev]} 건너뜀 (차로 중심 아님)")
+                amp = self.SM.WEAVE_LEVELS[self.weave_i_of(s)][0] if ev == "weave" else None
+                self.note(t, k, f"{NAME[ev]} 시작" + (f" ({amp} m)" if amp else ""), key=KEY_OF[ev], kind="start", y0=round(s["y"], 3), amp=amp)
+            elif el >= (AUTO["weave_align_timeout_s"] if ev == "weave" else AUTO["align_timeout_s"]):
+                why = "시작 위치 도달 못함" if ev == "weave" else "차로 중심 아님"
+                self.note(t, k, f"{NAME[ev]} 건너뜀 ({why})", kind="skip")
                 self.state = "recover"
                 self.set_phase("recover", k)
             else:
@@ -282,43 +285,45 @@ class AutoDriver:
                 if self.my_signal and s["sig"] == self.my_signal:
                     keys.append(self.my_signal)
                 self.my_signal = None
+                self.note(t, k, f"{NAME[ev]} 끝", kind="end", reason="duration")
                 self.begin_recover(t, k)
         elif self.phase == "run":
             mine = inj is not None and inj["k0"] == self.my_inj_k0
             if ev in LATERAL:
                 if not mine:
+                    self.note(t, k, f"{NAME[ev]} 끝 (다른 원인)", kind="end", reason="other")
                     self.begin_recover(t, k)
-                elif ev == "weave" and ((abs(s["psi"]) < AUTO["weave_still_rad"] and s["margin"] < AUTO["edge_min_m"] + AUTO["weave_release_buffer_m"])
-                                        or s["margin_pred"] < 0):
-                    # 흔들림 도중(방향각이 클 때) 풀면 그 방향 운동량이 남아 더 나가므로 흔들림 끝에서 푼다
+                elif ev == "weave" and self.weave_off_road(s):
                     keys.append("0")
-                    self.note(t, k, f"{NAME[ev]} 해제 (흔들림 끝, 가장자리 여유 {s['margin']:.2f} m)", key="0")
+                    self.note(t, k, f"{NAME[ev]} 해제 (해제 뒤 도로 밖 예측, 가장자리 여유 {s['margin']:.2f} m)", key="0", kind="end",
+                              reason="guard", dur=round(el, 1))
                     self.my_inj_k0 = None
                     self.begin_recover(t, k)
                 elif ev != "weave" and s["margin_pred"] < AUTO["edge_min_m"]:
                     keys.append("0")
-                    self.note(t, k, f"{NAME[ev]} 해제 (가장자리 여유 {s['margin']:.2f} m, 예측 {s['margin_pred']:.2f} m)", key="0")
+                    self.note(t, k, f"{NAME[ev]} 해제 (가장자리 여유 {s['margin']:.2f} m, 예측 {s['margin_pred']:.2f} m)", key="0",
+                              kind="end", reason="early_pred", dur=round(el, 1))
                     self.my_inj_k0 = None
                     self.begin_recover(t, k)
                 elif el >= AUTO["scenario_s"][ev] - 1e-9:
                     keys.append("0")
-                    self.note(t, k, f"{NAME[ev]} 해제 ({AUTO['scenario_s'][ev]:.0f}초)", key="0")
+                    self.note(t, k, f"{NAME[ev]} 해제 ({AUTO['scenario_s'][ev]:.0f}초)", key="0", kind="end", reason="duration", dur=round(el, 1))
                     self.my_inj_k0 = None
                     self.begin_recover(t, k)
             elif not mine and el > 0:
-                self.note(t, k, f"{NAME[ev]} 종료")
+                self.note(t, k, f"{NAME[ev]} 종료", kind="end", reason="auto_end", dur=round(el, 1))
                 self.my_inj_k0 = None
                 self.begin_recover(t, k)
         return keys, steer, speed
 
     def start_y(self, s, ev):
-        c = s["lane_c"]
-        if ev != "weave" or c == 0:
-            return c
-        amp = self.SM.WEAVE_LEVELS[self.weave_i_of(s)][0]
-        need = AUTO["weave_excursion_m"][amp] + AUTO["half_width_m"] + AUTO["edge_min_m"]
-        shift = max(0.0, need - (AUTO["road_edge_m"] - abs(c)))
-        return c - math.copysign(shift, c)
+        """횡방향 시나리오 시작 위치. drift/stuck 은 자기 차로 중심(원본 방향이 도로 가운데 쪽), weave 는 자차 차로 중심."""
+        return s["ego_c"] if ev == "weave" else s["lane_c"]
+
+    def weave_off_road(self, s):
+        """지금 풀면 방향각 정렬(Tψ)로 멈출 때까지 가는 위치가 도로 밖이다."""
+        y_rel = s["y"] + s["v"] * self.T_PSI * s["psi"]
+        return AUTO["road_edge_m"] - (abs(y_rel) + AUTO["half_width_m"]) < 0
 
     def weave_i_of(self, s):
         return self.sim_weave_i % len(self.SM.WEAVE_LEVELS)
