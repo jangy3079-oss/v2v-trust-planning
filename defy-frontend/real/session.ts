@@ -4,8 +4,8 @@
  * server.ts 가 쓰는 인터페이스는 mock/session.ts 와 같다.
  */
 import type {
-  ApiError, CommandBody, DemoEvent, DriveKey, ErrorCode, EventKind, GraphSample, PauseReason, Phase, ScenarioKind,
-  ScenarioReport, Snapshot, Solver, TutorialStep,
+  ApiError, AutoDriveLevel, AutoDriveStatus, AutoStopReason, CommandBody, DemoEvent, DriveKey, ErrorCode, EventKind, GraphSample,
+  PauseReason, Phase, ScenarioKind, ScenarioReport, Snapshot, Solver, TutorialStep,
 } from '../src/contracts.ts';
 import { MOCK_DEMO_CONFIG as CFG } from './config.ts';
 import { callBridge } from './bridge-sync.ts';
@@ -28,9 +28,13 @@ export function isControl(b: CommandBody): b is ControlBody {
 // 브리지가 돌려주는 시뮬레이션 부분 (bridge.py parts())
 type Parts = Pick<Snapshot, 'vehicles' | 'observation' | 'model' | 'ego_control' | 'plant' | 'scenario' | 'next_weave'> & {
   report: ScenarioReport | null; a_user_mps2: number; r_cmd_radps: number;
+  auto?: AutoDriveStatus; auto_held?: DriveKey[]; auto_stop?: boolean; // 자동 세션만 (bridge.py auto_step)
 };
 
-export function createSession(id: string, token: string, solver: Solver) {
+// 자동 모드 (명세 1.3). null = 수동 세션: 아래 자동 분기는 모두 건너뛴다
+export interface AutoOptions { seed: number; level: AutoDriveLevel }
+
+export function createSession(id: string, token: string, solver: Solver, auto: AutoOptions | null = null) {
   let generation = 0, frameSeq = 0, tick = -1;
   let phase: Phase = 'tutorial';
   let tutorialStep: TutorialStep | null = 0;
@@ -51,6 +55,8 @@ export function createSession(id: string, token: string, solver: Solver) {
   let events: DemoEvent[] = [], eventSeq = 0, undrained: DemoEvent[] = [];
   let graph: GraphSample[] = [];
   let created = false;
+  let autoOn = false;                               // 자동 세션에서 운전자가 조종 중 (manual 이 아님)
+  let takeover: AutoStopReason | null = null;       // 다음 스텝에 브리지로 넘길 사람 개입
 
   const simTime = () => (tick + 1) * DT;
   const sampleTime = () => (tick >= 0 ? tick * DT : null);
@@ -72,35 +78,56 @@ export function createSession(id: string, token: string, solver: Solver) {
     frameSeq = 0; tick = -1; phase = 'tutorial'; tutorialStep = 0; pauseReason = null; resumePhase = null;
     stepMs = null; lagMs = 0; runtimeError = null;
     clearInputs(); lastRecvSeq = null; lastAppliedSeq = null; inputConn = null; lastReport = null;
-    P = created ? callBridge<Parts>({ cmd: 'reset' }) : callBridge<Parts>({ cmd: 'new', solver });
+    P = created ? callBridge<Parts>({ cmd: 'reset' })
+      : callBridge<Parts>(auto ? { cmd: 'new', solver, auto: { ...auto, session_id: id } } : { cmd: 'new', solver });
     created = true;
+    if (auto) { autoOn = true; takeover = null; } // R: 같은 설정·같은 시드로 자동 복귀
     prev = { det: false, eff: false, collisions: 0, scenStart: null, scenKind: null, signal: 'off' };
     events = []; eventSeq = 0; undrained = []; graph = [];
     pushEvent(kind, kind === 'session.created' ? '세션 생성 (실제 15c)' : '초기화 — 새 세대, 안내 0단계');
   }
   init('session.created');
 
+  // 자동 세션: 사람 개입 → 수동 복귀 (pause/reset/advance 는 개입이 아니다)
+  function handBack(reason: AutoStopReason): void {
+    if (!auto || !autoOn) return;
+    autoOn = false;
+    takeover ??= reason;
+  }
+  // 자동 세션: phase 가 running 밖으로 나가면 운전자 정지를 브리지에 알린다 (기록용. 스텝이 멈추므로 키도 멈춘다)
+  function autoHalt(reason: string): void {
+    if (!auto || !autoOn) return;
+    try { callBridge({ cmd: 'auto_halt', reason }); } catch (err) { console.error('[real] auto_halt failed', err); }
+  }
+
   // ---- 한 스텝: 입력 적용 → 15c Session.step → 이벤트·그래프 ----
   function step(driving: DrivingBody[], measuredLagMs: number): void {
     const t0 = performance.now();
     tick += 1;
     lagMs = Math.max(0, Math.round(measuredLagMs));
+    if (auto && autoOn && driving.length > 0) handBack('human_command');
     const applied = new Set<DriveKey>([...heldReceived, ...tapped]);
     heldApplied = DRIVE_ORDER.filter(k => applied.has(k));
     tapped = new Set();
     lastAppliedSeq = lastRecvSeq;
 
-    const hadStop = driving.some(b => b.action === 'scenario.stop');
     const hadStart = driving.some(b => b.action === 'scenario.start');
     const before = P;
     try {
-      P = callBridge<Parts>({ cmd: 'step', held: heldApplied, actions: driving });
+      P = callBridge<Parts>(auto ? { cmd: 'step', held: heldApplied, actions: driving, takeover }
+        : { cmd: 'step', held: heldApplied, actions: driving });
     } catch (err) {
       console.error('[real] bridge error', err);
       setError({ code: 'INTERNAL_ERROR', message: '모델 실행 중 오류가 발생했습니다', retryable: true, details: {} });
       tick -= 1;
       return;
     }
+    if (auto) {
+      takeover = null;
+      if (P.auto_held) heldApplied = DRIVE_ORDER.filter(k => P.auto_held!.includes(k)); // 이번 스텝에 실제로 쓴 키 (운전자 또는 사람)
+    }
+    // 운전자가 넣은 0 도 사람의 해제와 같이 stopped (finished 는 원본이 스스로 끝낸 경우만)
+    const hadStop = driving.some(b => b.action === 'scenario.stop') || !!P.auto_stop;
 
     // 이벤트: 깜빡이, 시나리오, 경보, 충돌
     const sig = P.vehicles.neighbor.signal_side;
@@ -144,6 +171,7 @@ export function createSession(id: string, token: string, solver: Solver) {
 
   function systemPause(reason: PauseReason): boolean {
     if (phase !== 'running' && phase !== 'tutorial') return false;
+    if (phase === 'running') autoHalt(reason);
     resumePhase = phase; phase = 'paused'; pauseReason = reason;
     clearInputs();
     pushEvent('session.paused', `정지 (${reason})`);
@@ -151,6 +179,7 @@ export function createSession(id: string, token: string, solver: Solver) {
     return true;
   }
   function setError(err: ApiError): void {
+    if (phase === 'running') autoHalt('error');
     phase = 'error'; runtimeError = err; resumePhase = null; pauseReason = null;
     clearInputs();
     pushEvent('runtime.error', `서버 오류 (${err.code})`);
@@ -175,6 +204,7 @@ export function createSession(id: string, token: string, solver: Solver) {
         return { ok: true };
       case 'session.pause':
         if (phase !== 'running' && phase !== 'tutorial') return { ok: false, code: 'INVALID_STATE', message: `pause 불가: phase=${phase}` };
+        if (phase === 'running') autoHalt(b.payload.reason);
         resumePhase = phase; phase = 'paused'; pauseReason = b.payload.reason;
         clearInputs(); pushEvent('session.paused', `정지 (${b.payload.reason})`); frameSeq += 1;
         return { ok: true };
@@ -208,6 +238,7 @@ export function createSession(id: string, token: string, solver: Solver) {
       tutorial: phase === 'tutorial' || (phase === 'paused' && resumePhase === 'tutorial')
         ? { step: tutorialStep, completed: false } : { step: null, completed: tutorialStep == null },
       runtime: { connected, step_ms: stepMs, lag_ms: lagMs, pause_reason: pauseReason, resume_phase: resumePhase, error: runtimeError },
+      ...(auto && P.auto ? { auto: P.auto } : {}),
     };
   }
 
@@ -215,6 +246,7 @@ export function createSession(id: string, token: string, solver: Solver) {
     id, token, solver,
     get generation() { return generation; },
     get phase() { return phase; },
+    get autoDriving() { return !!auto && autoOn; }, // 운전자 조종 중: 입력 TTL 면제 (명세 1.3)
     snapshot, step, control, systemPause, setError,
     history(afterTick: number) {
       const from = graph[0]?.sample_tick ?? null;
@@ -232,6 +264,12 @@ export function createSession(id: string, token: string, solver: Solver) {
     },
     drainEvents(): DemoEvent[] { const e = undrained; undrained = []; return e; },
     setInput(held: DriveKey[], tap: DriveKey[], clientSeq: number, connectionId: string): void {
+      if (auto && autoOn) {
+        // 운전자 조종 중: 빈 입력은 받기만 하고 쓰지 않는다 (held_received 는 []). 비어 있지 않으면 수동 복귀
+        lastRecvSeq = clientSeq; inputConn = connectionId;
+        if (held.length === 0 && tap.length === 0) return;
+        handBack('human_input');
+      }
       heldReceived = [...held];
       for (const k of tap) tapped.add(k);
       lastRecvSeq = clientSeq; inputConn = connectionId;

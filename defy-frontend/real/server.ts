@@ -12,14 +12,14 @@
  * 실행: npm run mock   (포트: 환경변수 MOCK_PORT, 기본 8787)
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import type {
-  AckMessage, ApiError, CommandAction, CommandBody, CreateSessionResponse, DriveKey, ErrorCode, ErrorMessage, ErrorResponse,
+  AckMessage, ApiError, AutoDriveLevel, CommandAction, CommandBody, CreateSessionResponse, DriveKey, ErrorCode, ErrorMessage, ErrorResponse,
   EventsResponse, HealthResponse, HistoryResponse, PongMessage, ReadyMessage, Solver, TelemetryMessage,
 } from '../src/contracts.ts';
 import { MOCK_DEMO_CONFIG } from './config.ts';
-import { createSession, DT, isControl, type DrivingBody, type MockSession } from './session.ts';
+import { createSession, DT, isControl, type AutoOptions, type DrivingBody, type MockSession } from './session.ts';
 
 const PORT = Number(process.env['MOCK_PORT'] ?? 8787);
 const BASE = '/api/v1';
@@ -116,7 +116,7 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
   }
 
   if (method === 'GET' && path === `${BASE}/health`) {
-    const body: HealthResponse = { protocol_version: 'v1', ready: true, model_version: 'demo_v15c', available_solvers: MOCK_DEMO_CONFIG.available_solvers, auto_drive_available: false, server_time: now };
+    const body: HealthResponse = { protocol_version: 'v1', ready: true, model_version: 'demo_v15c', available_solvers: MOCK_DEMO_CONFIG.available_solvers, auto_drive_available: true, server_time: now };
     return send(res, 200, body);
   }
   if (method === 'GET' && path === `${BASE}/demo-config`) return send(res, 200, MOCK_DEMO_CONFIG);
@@ -127,12 +127,17 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
     let body: unknown;
     try { body = await readJson(req); } catch { return sendError(res, apiError('INVALID_ARGUMENT', 'JSON 본문이 아닙니다')); }
     if (typeof body !== 'object' || body === null || Array.isArray(body)) return sendError(res, apiError('INVALID_ARGUMENT', '본문은 객체여야 합니다'));
-    const extra = Object.keys(body).filter(k => k !== 'solver');
+    const extra = Object.keys(body).filter(k => !['solver', 'auto_drive', 'auto_seed', 'auto_level'].includes(k));
     if (extra.length) return sendError(res, apiError('INVALID_ARGUMENT', `정의되지 않은 필드: ${extra.join(', ')}`, { field: extra[0]! }));
     const solverRaw = (body as { solver?: unknown }).solver ?? 'rule';
     if (solverRaw !== 'rule' && solverRaw !== 'nmpc') return sendError(res, apiError('INVALID_ARGUMENT', 'solver 는 rule 또는 nmpc', { field: 'solver' }));
     const solver: Solver = solverRaw;
-    const bodyKey = JSON.stringify({ solver });
+    // 자동 모드 (명세 1.3, v1.5). 멱등키 비교는 요청에 들어온 그대로 (생략은 생략 → 수동 요청의 비교 키는 기존과 같다)
+    const { auto_drive: ad, auto_seed: as, auto_level: al } = body as { auto_drive?: unknown; auto_seed?: unknown; auto_level?: unknown };
+    if (ad !== undefined && typeof ad !== 'boolean') return sendError(res, apiError('INVALID_ARGUMENT', 'auto_drive 는 boolean', { field: 'auto_drive' }));
+    if (as !== undefined && !(typeof as === 'number' && Number.isSafeInteger(as) && as >= 0)) return sendError(res, apiError('INVALID_ARGUMENT', 'auto_seed 는 0 이상 안전 정수', { field: 'auto_seed' }));
+    if (al !== undefined && !['low', 'normal', 'high', 'random'].includes(al as string)) return sendError(res, apiError('INVALID_ARGUMENT', 'auto_level 은 low/normal/high/random', { field: 'auto_level' }));
+    const bodyKey = JSON.stringify({ solver, auto_drive: ad, auto_seed: as, auto_level: al });
     const cached = idempotency.get(key);
     if (cached && Date.now() - cached.at < IDEMPOTENCY_TTL_MS) {
       if (cached.bodyKey !== bodyKey) return sendError(res, apiError('IDEMPOTENCY_CONFLICT', '같은 Idempotency-Key 에 다른 본문'));
@@ -140,14 +145,16 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
     }
     if (!MOCK_DEMO_CONFIG.available_solvers.includes(solver)) return sendError(res, apiError('SOLVER_UNAVAILABLE', `${solver} 는 목업 서버에서 지원하지 않습니다`, { solver }));
     const id = `real_${randomUUID().slice(0, 8)}`;
-    const s = createSession(id, randomUUID(), solver);
+    // 시드 생략 → 서버가 정해 세션에 저장 (R 뒤에도 같은 시드, Snapshot.auto.seed 로 알림)
+    const auto: AutoOptions | null = ad === true ? { seed: (as as number | undefined) ?? randomInt(0, 2 ** 31 - 1), level: (al as AutoDriveLevel | undefined) ?? 'normal' } : null;
+    const s = createSession(id, randomUUID(), solver, auto);
     sessions.set(id, { s, conn: null, requests: new Map(), pending: [], due: 0, lastInputAt: 0, disconnectedAt: performance.now(), expired: false });
     const payload: CreateSessionResponse = {
       protocol_version: 'v1', session_id: id, session_token: s.token, ws_path: `${BASE}/sessions/${id}/stream`,
       expires_after_disconnect_s: 120, snapshot: s.snapshot(),
     };
     idempotency.set(key, { bodyKey, at: Date.now(), status: 201, payload });
-    console.log(`[mock] session created ${id} (${solver})`);
+    console.log(`[mock] session created ${id} (${solver}${auto ? `, auto seed=${auto.seed} level=${auto.level}` : ''})`);
     return send(res, 201, payload);
   }
 
@@ -450,6 +457,7 @@ setInterval(() => {
       console.log(`[mock] ${e.s.id} expired`);
       continue;
     }
+    if (e.s.autoDriving) e.lastInputAt = now; // 자동: 운전자 조종 중에는 입력 TTL 면제, 수동 복귀 순간부터 새로 센다 (명세 1.3)
     if (e.s.phase === 'running' && now - e.lastInputAt > INPUT_LEASE_MS) {
       // 입력 TTL: held/tapped 비우고 paused/input_timeout (tutorial·paused 에는 적용하지 않음)
       e.s.systemPause('input_timeout');
