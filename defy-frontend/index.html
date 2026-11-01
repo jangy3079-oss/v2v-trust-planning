@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>15c 실시간 차량 시연</title>
+</head>
+<body>
+  <header id="banner">
+    <span id="bannerTitle" class="sample">샘플 데이터 — 실제 15c 출력 아님</span>
+    <span id="bannerInfo" class="info" tabindex="0">ⓘ</span>
+    <!-- 테스트 막대 (항상 보임): 샘플 재생 / 정적 확인 프레임 선택 -->
+    <div id="testBar">
+      <span class="test-label">테스트</span>
+      <select id="frameSelect" title="샘플 재생 / 정적 확인 프레임"></select>
+    </div>
+  </header>
+
+  <!-- 명세 3.1: 왼쪽 약 42% 주행 화면 / 오른쪽 약 58% 상태·신뢰도·탭·그래프 (100vh 고정, 스크롤 없음) -->
+  <main id="app">
+    <section id="roadPane">
+      <canvas id="road"></canvas>
+      <label id="hudToggle"><input type="checkbox" id="hudCheck" role="switch"><span class="switch" aria-hidden="true"></span>HUD</label>
+      <div id="lockBadge" hidden></div>
+      <!-- 주행 화면 왼쪽 아래: 자차 반응 요약 + 키 (도로·자차·고정 문구를 가리지 않는 여백에) -->
+      <div id="roadDock">
+        <section id="egoSummary"></section>
+        <div id="keys" title="키 (실제 키보드 배열) · 키 그림은 표시용이며 운전은 물리 키보드로 합니다">
+          <div id="keyRows"></div>
+          <div id="keyNote"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="panel">
+      <!-- 1. 상태 줄: 시간 · 연결 · 준비 · 단계 -->
+      <div id="statusBar"></div>
+
+      <!-- 2. 신뢰도 카드: τ 게이지 2개 + 경보 배지 -->
+      <section id="trustCard" class="card">
+        <div class="card-head">
+          <h3>신뢰도 · 경보</h3>
+          <span id="trustInfo" class="info" tabindex="0">ⓘ</span>
+          <span id="trustLegend" class="tick-legend" title="게이지 눈금"></span>
+          <details id="trustMore" class="pop">
+            <summary>상세</summary>
+            <div id="trustRefs" class="pop-body"></div>
+          </details>
+        </div>
+        <div id="trustBody"></div>
+      </section>
+
+      <!-- 3. 탭 -->
+      <section id="tabs" class="card">
+        <div class="tabbar" role="tablist">
+          <button type="button" class="tab" role="tab" data-tab="score">점수·누적량 <span id="sumScore" class="tab-sum"></span></button>
+          <button type="button" class="tab" role="tab" data-tab="context">컨텍스트·자차 <span id="sumContext" class="tab-sum"></span></button>
+          <button type="button" class="tab" role="tab" data-tab="scenario">시나리오·로그 <span id="sumScenario" class="tab-sum"></span></button>
+          <button type="button" class="tab" role="tab" data-tab="provenance">데이터 근거 <span id="sumProvenance" class="tab-sum"></span></button>
+        </div>
+        <div class="tabpane" role="tabpanel" data-pane="score"><div id="accBox"></div><div id="scoreBox"></div></div>
+        <div class="tabpane" role="tabpanel" data-pane="context"><div id="contextBox"></div><div id="egoMoreBox"></div></div>
+        <div class="tabpane" role="tabpanel" data-pane="scenario"><div id="scenarioBox"></div><div id="scenarioMoreBox"></div><div id="logBox"></div></div>
+        <div class="tabpane" role="tabpanel" data-pane="provenance">
+          <div class="prov-head">
+            <span id="provSource" class="prov-source"></span>
+            <span id="provNote" class="prov-local"></span>
+            <details id="provJson" class="pop">
+              <summary>증거 · 최신 Snapshot 원본 JSON</summary>
+              <div class="pop-body json-pop">
+                <div class="json-bar"><span id="provJsonNote"></span><button type="button" id="provJsonRefresh">갱신</button></div>
+                <pre id="provJsonText"></pre>
+              </div>
+            </details>
+          </div>
+          <!-- 증거: 서버가 내 입력을 받아 반영했다는 근거 -->
+          <div class="prov-col evidence">
+            <div class="prov-title">증거 <span id="provEvidenceNote"></span></div>
+            <div id="provEvidence"></div>
+          </div>
+          <!-- 연결 상태: 수신 흐름·순서·세션 -->
+          <div class="prov-col"><div class="prov-title">연결 상태</div><div id="provConn1"></div></div>
+          <div class="prov-col"><div class="prov-title">&nbsp;</div><div id="provConn2"></div></div>
+        </div>
+      </section>
+
+      <!-- 4. 60초 그래프 (맨 아래, 남는 높이 전부) -->
+      <div id="chartBox" class="card"><canvas id="chart"></canvas></div>
+    </section>
+  </main>
+
+  <!-- 디버그: 주소에 #debug 를 붙이면 보인다 (메시지 로그, 주 레이아웃 위에 떠 있는 창) -->
+  <aside id="debug" class="card" hidden>
+    <div class="dbg-head"><span>디버그 · 생성 메시지 (전송 안 함)</span></div>
+    <div id="dbgStatus" class="dbg-label"></div>
+    <div id="dbgServer" class="dbg-tools" hidden>
+      <button type="button" id="dbgDropClient">연결 끊기 (클라이언트)</button>
+      <button type="button" id="dbgDropServer">목업: 서버에서 끊기</button>
+      <button type="button" id="dbgDropAck">목업: 다음 reset ack 버리기</button>
+      <label><input type="checkbox" id="dbgNoInput"> input.state 보내지 않기 (TTL 시험)</label>
+      <select id="dbgFault" title="목업으로 오류·정지 일으키기"></select>
+      <button type="button" id="dbgFaultRun">일으키기</button>
+    </div>
+    <div class="dbg-label">최근 input.state <span id="refreshCount"></span></div>
+    <pre id="msgLatest">(running 에서 키를 누르면 표시)</pre>
+    <div class="dbg-label">메시지 로그 (최신이 위 · 주기 재전송 제외 · 콘솔에도 출력)</div>
+    <pre id="msgLog"></pre>
+  </aside>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

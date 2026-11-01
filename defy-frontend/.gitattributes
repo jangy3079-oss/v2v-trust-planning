@@ -1,0 +1,2 @@
+# 계약 파일 사본은 원본과 바이트 단위로 같아야 한다 (scripts/check-contracts.mjs). 줄바꿈 변환 금지
+src/contracts.ts -text

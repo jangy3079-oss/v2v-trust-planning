@@ -9,6 +9,7 @@
 """
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
 import casadi as ca
@@ -17,11 +18,104 @@ import numpy as np
 from .config import Config
 
 
+class OvertakeState(Enum):
+    NORMAL = "NORMAL"
+    AVOIDING = "AVOIDING"
+    RETURNING = "RETURNING"
+
+
+class OvertakeStateMachine:
+    """계층적 3단계 추월 의사결정 상태머신 (Sun et al., Neurocomputing 2021 기반)."""
+
+    def __init__(
+        self,
+        lane_width: float = 3.5,
+        clearance_m: float = 5.0,
+        trust_threshold: float = 0.7,
+        d_lat_min: float = 2.0,
+        beta_lat: float = 0.8,
+    ):
+        self.lane_width = lane_width
+        self.clearance_m = clearance_m
+        self.trust_threshold = trust_threshold
+        self.d_lat_min = d_lat_min
+        self.beta_lat = beta_lat
+        self.state = OvertakeState.NORMAL
+        self.target_y = 0.0
+        self.current_v_cmd: float = 20.0
+
+    def reset(self) -> None:
+        self.state = OvertakeState.NORMAL
+        self.target_y = 0.0
+        self.current_v_cmd = 20.0
+
+    def step(
+        self,
+        ego_x: float,
+        ego_y: float,
+        obs_x: Optional[float],
+        obs_y: Optional[float],
+        tau: float,
+        d_lon: float,
+        base_target_vel: float = 20.0,
+        obs_speed: Optional[float] = None,
+    ) -> Tuple[OvertakeState, float, float]:
+        """추월 상태 전이 및 목표 횡방향 위치, 평활 속도 산출."""
+        if obs_x is None:
+            self.state = OvertakeState.NORMAL
+            self.target_y = 0.0
+            self.current_v_cmd = base_target_vel
+            return self.state, self.target_y, self.current_v_cmd
+
+        dx = obs_x - ego_x  # 장애물 상대 거리 (전방이면 양수)
+
+        # 1. 상태 전이 로직: 엄격한 신뢰도 인과성 보장 (tau <= trust_threshold 필수 조건)
+        if self.state == OvertakeState.NORMAL:
+            is_risk = (tau <= self.trust_threshold and 0.0 < dx < d_lon + 10.0)
+            if is_risk:
+                self.state = OvertakeState.AVOIDING
+                lat_expansion = self.beta_lat * (1.0 - tau)
+                self.target_y = -(self.lane_width + lat_expansion) if obs_y >= 0.0 else (self.lane_width + lat_expansion)
+            else:
+                self.target_y = 0.0
+
+        elif self.state == OvertakeState.AVOIDING:
+            # 종방향으로 장애물을 완전히 추월했는지 판정 (dx < -clearance_m)
+            if dx < -self.clearance_m:
+                self.state = OvertakeState.RETURNING
+                self.target_y = 0.0
+
+        elif self.state == OvertakeState.RETURNING:
+            # 원래 차로(0.0m)에 거의 복귀했는지 판정
+            if abs(ego_y) < 0.4:
+                self.state = OvertakeState.NORMAL
+                self.target_y = 0.0
+
+        # 2. 속도 우선순위 제어 (Sun et al. Applied Sciences 2021)
+        # 등속 유지(1순위) vs 가속 추월(2순위): 전방 장애물이 고속(>= 16m/s, 예: Drowsy)으로 주행 중일 때만 부드럽게 가속
+        if self.state == OvertakeState.AVOIDING:
+            if obs_speed is not None and obs_speed >= 16.0:
+                desired_v = base_target_vel + 2.0
+            else:
+                desired_v = base_target_vel
+        else:
+            desired_v = base_target_vel
+
+        # 불연속 저크 스파이크 방지: 속도 기준 궤적 점진적 램프 (가속도 0.5 m/s^2 제한)
+        v_step = 0.5 * 0.1  # 0.05 m/s
+        if self.current_v_cmd < desired_v:
+            self.current_v_cmd = min(desired_v, self.current_v_cmd + v_step)
+        elif self.current_v_cmd > desired_v:
+            self.current_v_cmd = max(desired_v, self.current_v_cmd - v_step)
+
+        return self.state, self.target_y, self.current_v_cmd
+
+
 def dynamic_safety_margin(
     tau_j: float,
     v_rel: float,
-    d0: float,
-    beta_base: float = 3.0,
+    d0: float = 5.0,
+    beta_base: float = 5.0,
     beta_speed: float = 1.0,
 ) -> float:
     """d_safe = d0 + beta_base * (1 - tau_j) + beta_speed * (1 - tau_j) * v_rel.
@@ -32,6 +126,19 @@ def dynamic_safety_margin(
     """
     uncertainty = 1.0 - tau_j
     return float(d0 + beta_base * uncertainty + beta_speed * uncertainty * max(0.0, v_rel))
+
+
+def dynamic_lateral_safety_margin(
+    tau_j: float,
+    d_lat_min: float = 2.0,
+    beta_lat: float = 0.8,
+) -> float:
+    """d_safe_lat = d_lat_min + beta_lat * (1 - tau_j).
+
+    신뢰도 하락 시 횡방향 타원 반경을 동적으로 확장 (2.0m -> 2.8m).
+    """
+    uncertainty = 1.0 - tau_j
+    return float(d_lat_min + beta_lat * uncertainty)
 
 
 def steer_to_yaw_rate(delta: float, v: float, wheelbase: float) -> float:
@@ -52,6 +159,16 @@ class ObstacleTrajectory:
     trajectory: np.ndarray  # shape (2, N) : [X, Y] 위치 궤적
     d_safe: float
     trust: float
+    d_safe_lat: Optional[float] = None
+
+    @property
+    def d_safe_lon(self) -> float:
+        return self.d_safe
+
+    def get_d_safe_lat(self, d_lat_min: float = 2.0, beta_lat: float = 0.8) -> float:
+        if self.d_safe_lat is not None:
+            return float(self.d_safe_lat)
+        return dynamic_lateral_safety_margin(self.trust, d_lat_min, beta_lat)
 
 
 @dataclass
@@ -77,7 +194,21 @@ class TrustAwareNMPC:
         self.max_obs = max_obstacles
 
         self.last_u = np.zeros(2)  # [a, delta]
+        self.fallback_count: int = 0
+        self.state_machine = OvertakeStateMachine(
+            lane_width=3.5,
+            clearance_m=getattr(config, "overtake_clearance_m", 5.0),
+            trust_threshold=getattr(config, "trust_threshold_avoid", 0.7),
+            d_lat_min=getattr(config, "d_safe_lat_min", 2.0),
+            beta_lat=getattr(config, "beta_lat", 0.8),
+        )
         self._build_opti()
+
+    def reset(self) -> None:
+        """새 시뮬레이션 시작 시 제어 입력 및 상태머신 초기화."""
+        self.last_u = np.zeros(2)
+        self.fallback_count = 0
+        self.state_machine.reset()
 
     def _build_opti(self) -> None:
         self.opti = ca.Opti()
@@ -95,8 +226,10 @@ class TrustAwareNMPC:
 
         # 장애물 파라미터
         self.obs_traj = [self.opti.parameter(2, self.N) for _ in range(self.max_obs)]
-        self.obs_dsafe = [self.opti.parameter(1, 1) for _ in range(self.max_obs)]
+        self.obs_dsafelon = [self.opti.parameter(1, 1) for _ in range(self.max_obs)]
+        self.obs_dsafelat = [self.opti.parameter(1, 1) for _ in range(self.max_obs)]
         self.obs_active = [self.opti.parameter(1, 1) for _ in range(self.max_obs)]
+        self.obs_dsafe = self.obs_dsafelon  # 하위 호환성 유지
 
         # 1. 초기 상태 제약
         self.opti.subject_to(self.X[:, 0] == self.x0)
@@ -127,24 +260,31 @@ class TrustAwareNMPC:
             self.opti.subject_to(self.opti.bounded(self.cfg.min_accel_mps2, a_k, self.cfg.max_accel_mps2))
             self.opti.subject_to(self.opti.bounded(self.cfg.min_steer_rad, delta_k, self.cfg.max_steer_rad))
 
-            # 4. 충돌 회피 제약 (수치 안정화 슬랙 Soft Constraint)
-            # dist + epsilon >= active * d_safe
+            # 도로 전체 폭 하드 부등식 제약 (|Y| <= road_bound_y_m, 기본값 5.25m)
+            self.opti.subject_to(self.opti.bounded(-self.cfg.road_bound_y_m, y_next, self.cfg.road_bound_y_m))
+
+            # 4. 이방성(타원형) 충돌 회피 제약 (수치 안정화 슬랙 Soft Constraint)
+            # ((dx/d_lon)^2 + (dy/d_lat)^2) >= 1
+            # 차원(m) 및 수치 안정성 유지를 위해 d_lon 스케일:
+            # sqrt(dx^2 + (scale_lat * dy)^2 + delta_reg) + eps >= active * d_safe_lon
             for j in range(self.max_obs):
                 obs_x = self.obs_traj[j][0, k]
                 obs_y = self.obs_traj[j][1, k]
-                dist_sq_reg = (x_next - obs_x) ** 2 + (y_next - obs_y) ** 2 + self.cfg.slack_reg
+                dx = x_next - obs_x
+                dy = y_next - obs_y
+                scale_lat = self.obs_dsafelon[j] / self.obs_dsafelat[j]
+                dist_sq_reg = dx ** 2 + (scale_lat * dy) ** 2 + self.cfg.slack_reg
                 dist_reg = ca.sqrt(dist_sq_reg)
 
-                self.opti.subject_to(dist_reg + self.eps[j][0, k] >= self.obs_active[j] * self.obs_dsafe[j])
+                self.opti.subject_to(dist_reg + self.eps[j][0, k] >= self.obs_active[j] * self.obs_dsafelon[j])
                 self.opti.subject_to(self.eps[j][0, k] >= 0.0)
 
                 # 슬랙 변수 무거운 페널티
                 cost += self.cfg.weight_slack * (self.eps[j][0, k] ** 2)
 
             # 5. 비용 함수 (Reference 추종 + 제어 노력 + 저크 억제)
-            cost += self.cfg.weight_track_pos * (
-                (x_next - self.ref_traj[0, k + 1]) ** 2 + (y_next - self.ref_traj[1, k + 1]) ** 2
-            )
+            cost += self.cfg.weight_track_pos * ((y_next - self.ref_traj[1, k + 1]) ** 2)
+            cost += 1.0 * ((theta_next - self.ref_traj[2, k + 1]) ** 2)
             cost += self.cfg.weight_track_vel * ((v_next - self.ref_traj[3, k + 1]) ** 2)
             cost += self.cfg.weight_control_accel * (a_k ** 2)
             cost += self.cfg.weight_control_steer * (delta_k ** 2)
@@ -162,11 +302,12 @@ class TrustAwareNMPC:
 
         p_opts = {"expand": True, "print_time": False}
         s_opts = {
-            "max_iter": 100,
+            "max_iter": 200,
             "print_level": 0,
             "sb": "yes",
             "tol": 1e-3,
             "acceptable_tol": 1e-2,
+            "acceptable_iter": 10,
         }
         self.opti.solver("ipopt", p_opts, s_opts)
 
@@ -189,15 +330,57 @@ class TrustAwareNMPC:
             u_opt: 최적 제어 입력 [a_0, delta_0], shape (2,).
             x_pred: 예측 궤적 [X, Y, theta, v], shape (4, N+1).
         """
-        # 기준 궤적 생성 (기본값: 현재 헤딩 방향으로 직진 등속)
+        # 기준 궤적 생성 (기본값: 3단계 상태머신 기반 적응형 추월 및 복귀 궤적)
         if ref_trajectory is None:
+            obs_x, obs_y, obs_v, d_lon_val, tau_val = None, None, 20.0, 10.0, 1.0
+            if obstacles and len(obstacles) > 0:
+                # 다차량 지원:
+                # 1순위: tau <= trust_threshold인 이상 위험 차량 중 아직 추월 완료되지 않은 전방 차량 (dx > -clearance_m)
+                # 2순위: 전방(dx > 0) 최근접 선행 차량
+                # 3순위: 리스트 첫 번째 장애물
+                anomalous_obs = [
+                    o for o in obstacles
+                    if o.trust <= self.state_machine.trust_threshold and (float(o.trajectory[0, 0]) - ego_state[0]) > -self.state_machine.clearance_m
+                ]
+                if anomalous_obs:
+                    lead_obs = min(anomalous_obs, key=lambda o: (float(o.trajectory[0, 0]) - ego_state[0]))
+                else:
+                    forward_obs = [
+                        o for o in obstacles
+                        if (float(o.trajectory[0, 0]) - ego_state[0]) > 0
+                    ]
+                    if forward_obs:
+                        lead_obs = min(forward_obs, key=lambda o: (float(o.trajectory[0, 0]) - ego_state[0]))
+                    else:
+                        lead_obs = obstacles[0]
+
+                obs_x = float(lead_obs.trajectory[0, 0])
+                obs_y = float(lead_obs.trajectory[1, 0])
+                if lead_obs.trajectory.shape[1] > 1:
+                    obs_v = float((lead_obs.trajectory[0, 1] - lead_obs.trajectory[0, 0]) / self.dt)
+                else:
+                    obs_v = 20.0
+                d_lon_val = float(lead_obs.d_safe_lon)
+                tau_val = float(lead_obs.trust)
+
+            st, target_y, v_cmd = self.state_machine.step(
+                ego_state[0],
+                ego_state[1],
+                obs_x,
+                obs_y,
+                tau_val,
+                d_lon_val,
+                base_target_vel=target_velocity,
+                obs_speed=obs_v,
+            )
+
             ref_traj = np.zeros((4, self.N + 1))
-            curr_x, curr_y, curr_theta, _ = ego_state
+            curr_x = ego_state[0]
             for k in range(self.N + 1):
-                ref_traj[0, k] = curr_x + target_velocity * np.cos(curr_theta) * k * self.dt
-                ref_traj[1, k] = curr_y + target_velocity * np.sin(curr_theta) * k * self.dt
-                ref_traj[2, k] = curr_theta
-                ref_traj[3, k] = target_velocity
+                ref_traj[0, k] = curr_x + v_cmd * k * self.dt
+                ref_traj[1, k] = target_y
+                ref_traj[2, k] = 0.0
+                ref_traj[3, k] = v_cmd
         else:
             ref_traj = ref_trajectory
 
@@ -211,11 +394,17 @@ class TrustAwareNMPC:
             if j < len(obs_list):
                 obs = obs_list[j]
                 self.opti.set_value(self.obs_traj[j], obs.trajectory)
-                self.opti.set_value(self.obs_dsafe[j], float(obs.d_safe))
+                d_lon = float(obs.d_safe_lon)
+                d_lat_min = getattr(self.cfg, "d_safe_lat_min", 2.0)
+                beta_lat = getattr(self.cfg, "beta_lat", 0.8)
+                d_lat = obs.get_d_safe_lat(d_lat_min, beta_lat)
+                self.opti.set_value(self.obs_dsafelon[j], max(1.0, d_lon))
+                self.opti.set_value(self.obs_dsafelat[j], max(0.5, d_lat))
                 self.opti.set_value(self.obs_active[j], 1.0)
             else:
                 self.opti.set_value(self.obs_traj[j], np.ones((2, self.N)) * 1000.0)
-                self.opti.set_value(self.obs_dsafe[j], 0.0)
+                self.opti.set_value(self.obs_dsafelon[j], 1.0)
+                self.opti.set_value(self.obs_dsafelat[j], 1.0)
                 self.opti.set_value(self.obs_active[j], 0.0)
 
         try:
@@ -227,9 +416,13 @@ class TrustAwareNMPC:
             self.last_u = u_opt.copy()
             return u_opt, x_pred
         except RuntimeError:
-            # 해를 찾지 못한 경우(Infeasible/Max Iter) 안전 감속 비상 제어
+            self.fallback_count += 1
+            # 해를 찾지 못한 경우(Infeasible/Max Iter) 안전 감속 및 차로 복귀 제어
             fallback_a = float(np.clip(-3.0, self.cfg.min_accel_mps2, self.cfg.max_accel_mps2))
-            fallback_u = np.array([fallback_a, 0.0])
+            fallback_steer = float(
+                np.clip(-1.0 * ego_state[2] - 0.5 * ego_state[1], self.cfg.min_steer_rad, self.cfg.max_steer_rad)
+            )
+            fallback_u = np.array([fallback_a, fallback_steer])
             self.last_u = fallback_u.copy()
             fallback_x = np.repeat(ego_state.reshape(4, 1), self.N + 1, axis=1)
             return fallback_u, fallback_x

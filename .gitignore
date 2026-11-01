@@ -4,3 +4,7 @@ __pycache__/
 *.pt
 *.egg-info/
 .DS_Store
+
+# 15c 서버(defy-frontend/real)가 읽는 탐지 모델 — 용량이 작아 예외로 추적한다
+!scratch_v10/models/B1_sd0.23_s0.pt
+!scratch_v10/models/B2_sd0.23_s0.pt

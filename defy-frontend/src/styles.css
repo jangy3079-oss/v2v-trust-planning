@@ -1,0 +1,405 @@
+/*
+ * 시험장 기록지: 밝은 기록지 패널 + 어두운 아스팔트 도로.
+ * 캔버스·SVG 색은 src/view/theme.ts 와 맞춘다. τ 색은 명세 3.1·4.1 (탐지 하늘색, 반응 주황색, a2 회색).
+ */
+:root {
+  --paper: #E8ECEE;        /* 패널 바탕 (기록지) */
+  --sheet: #F5F7F6;        /* 구역 바탕 */
+  --grid: rgba(26, 38, 50, .045);
+  --grid-major: rgba(26, 38, 50, .07);
+  --line: #C9D1D5;
+  --ink: #1A2632;
+  --ink2: #4E5B66;
+  --muted: #6B7780;
+  --asphalt: #2A2F35;
+  --asphalt-2: #3A4149;
+  --paint: #F2C230;        /* 차선 도료 노랑: 주 버튼·안내 */
+  --det: #1E9BD0;
+  --eff: #E8711F;
+  --det-glow: #38bdf8;     /* 도로(어두운 바탕) 위 */
+  --eff-glow: #fb923c;
+  --signal: #9A6A00;
+  --danger: #C8322B;
+  --ok: #2E8B57;
+  --sample: #B0245E;
+  --font-ui: "IBM Plex Sans KR", system-ui, "Malgun Gothic", sans-serif;
+  --font-num: "Barlow Semi Condensed", "IBM Plex Sans KR", system-ui, sans-serif;
+  /* 예전 이름 (호환) */
+  --card: var(--sheet);
+  --card2: #ECEFEF;
+  --text: var(--ink);
+  --control-bg: #E3E8EA;
+  --control-border: #B9C3C8;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--paper); color: var(--ink);
+  font: 13px/1.45 var(--font-ui);
+  display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+:focus-visible { outline: 2px solid var(--det); outline-offset: 2px; }
+button { font-family: var(--font-ui); }
+
+/* 상단 배너: 샘플 데이터 표시 (도장처럼) */
+#banner {
+  flex: none; display: flex; gap: 10px; align-items: center;
+  padding: 5px 14px; background: var(--ink); color: #D7DDE1; font-size: 12px;
+}
+#banner .sample {
+  color: #FFD3E2; font-weight: 700; padding: 0 8px; border: 1.5px solid #E2709B; border-radius: 3px; letter-spacing: .01em;
+}
+#banner .info { color: #9AA6AE; }
+#testBar { margin-left: auto; display: flex; align-items: center; gap: 6px; position: relative; z-index: 60; } /* 안내 마스크 위 (개발용) */
+#testBar .test-label { font-size: 12px; color: #9AA6AE; }
+#testBar select {
+  background: #24313D; color: #E6EAED; border: 1px solid #3B4A57; border-radius: 3px; padding: 1px 4px;
+  font: 12px var(--font-ui); max-width: 260px;
+}
+.info { color: var(--muted); cursor: help; font-size: 12px; }
+
+/* 명세 3.1: 왼쪽 약 42% 주행 화면 / 오른쪽 약 58% 패널 */
+#app { flex: 1; min-height: 0; display: grid; grid-template-columns: 42% 58%; }
+#roadPane { container: road / size; position: relative; min-height: 0; background: var(--asphalt); overflow: hidden; box-shadow: inset -1px 0 0 #11161B; }
+#road { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+#hudToggle {
+  position: absolute; left: 12px; top: 36px; z-index: 5; display: flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 600; color: #C3CBD1;
+  background: rgba(20, 25, 30, .75); padding: 3px 9px 3px 5px; border-radius: 12px; cursor: pointer; user-select: none;
+}
+/* 실제 체크박스는 보이지 않게 두고(포커스·스크린리더용) 스위치 그림으로 표시 */
+#hudToggle input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; }
+#hudToggle .switch {
+  position: relative; width: 26px; height: 14px; border-radius: 7px; background: #4A535D; flex: none; transition: background .15s;
+}
+#hudToggle .switch::after {
+  content: ""; position: absolute; left: 2px; top: 2px; width: 10px; height: 10px; border-radius: 50%; background: #C3CBD1; transition: transform .15s;
+}
+#hudToggle input:checked + .switch { background: var(--paint); }
+#hudToggle input:checked + .switch::after { transform: translateX(12px); background: var(--ink); }
+#hudToggle:has(input:checked) { color: #F0F3F5; }
+#hudToggle input:focus-visible + .switch { outline: 2px solid var(--det-glow); outline-offset: 2px; }
+
+/* 오른쪽: 기록지 한 장. 스크롤 없이 그래프가 남는 높이를 차지한다 */
+#panel {
+  min-height: 0; overflow: hidden; padding: 10px 12px; display: grid; gap: 8px;
+  grid-template-rows: auto auto auto minmax(160px, 1fr); /* 상태 · 신뢰도 · 탭 · 그래프(남는 높이) */
+  background-color: var(--paper);
+  background-image:
+    linear-gradient(var(--grid-major) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-major) 1px, transparent 1px),
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: 40px 40px, 40px 40px, 8px 8px, 8px 8px;
+}
+#panel > :not(#chartBox) { min-height: min-content; } /* 그래프만 줄어들고 다른 행은 압축되지 않게 */
+
+.card { background: var(--sheet); border: 1px solid var(--line); border-radius: 4px; padding: 8px 12px; min-width: 0; }
+.card h3 { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--ink); }
+.card h4 { margin: 0 0 4px; font-size: 12px; font-weight: 600; color: var(--ink2); }
+.note { font-size: 12px; color: var(--muted); }
+.on { color: var(--signal); font-weight: 600; }
+.bad { color: var(--danger); font-weight: 700; }
+
+/* 1. 상태 줄: 계기판 윗줄처럼 잉크 띠 하나 */
+#statusBar {
+  display: flex; flex-wrap: wrap; row-gap: 2px; overflow: hidden; white-space: nowrap; /* 좁으면 두 줄 */
+  background: var(--ink); color: #E6EAED; border-radius: 4px; padding: 4px 4px;
+}
+#statusBar .item { padding: 1px 10px; flex: none; font-size: 14px; font-variant-numeric: tabular-nums; }
+#statusBar .item + .item { box-shadow: inset 1px 0 0 #3B4A57; }
+#statusBar .k { color: #93A0A9; margin-right: 6px; font-size: 12px; }
+#statusBar .warn { color: var(--paint); }
+#statusBar .bad { color: #FF9A8F; }
+
+/* 2. 신뢰도 카드: τ탐지 | τ반응 | 경보 등. 이 화면의 주인공 */
+#trustCard { border-color: #B9C3C8; }
+.card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.card-head h3 { margin: 0; }
+.pop { position: relative; margin-left: auto; }
+.pop summary { color: var(--ink2); font-size: 12px; cursor: pointer; }
+.pop-body {
+  position: absolute; right: 0; top: 22px; z-index: 10; min-width: 220px;
+  background: var(--sheet); border: 1px solid var(--line); border-radius: 4px; padding: 6px 10px; box-shadow: 0 8px 24px rgba(26, 38, 50, .18);
+}
+.trust-grid { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(120px, 1fr) minmax(200px, 1.4fr); gap: 10px; align-items: stretch; }
+.dial { padding: 2px 6px 4px; text-align: center; border-right: 1px solid var(--line); }
+.dial svg.arc { width: 100%; max-width: 108px; height: auto; display: block; margin: 0 auto; overflow: visible; }
+.arc .num { font-family: var(--font-num); font-variant-numeric: tabular-nums; }
+.dial-title { font-size: 12px; font-weight: 600; color: var(--ink2); text-align: left; }
+.dial .tags { min-height: 20px; }
+.dial-sub { font-size: 12px; color: var(--ink2); margin-top: -2px; }
+.tick-legend { display: flex; gap: 10px; font-size: 12px; color: var(--ink2); margin-left: 6px; white-space: nowrap; }
+.tick-legend i { display: inline-block; width: 14px; height: 0; vertical-align: middle; margin-right: 4px; border-top: 2px solid; }
+.tick-legend .ref-alarm { border-color: var(--danger); }
+.tick-legend .ref-rec { border-color: var(--ok); border-top-style: dashed; }
+.tag { display: inline-block; padding: 0 7px; border-radius: 3px; font-size: 12px; color: var(--muted); margin: 1px 2px; }
+.tag.prep { color: var(--signal); }
+.tag.alarm-det { color: #fff; background: var(--det); font-weight: 700; }
+.tag.alarm-eff { color: #fff; background: var(--eff); font-weight: 700; }
+
+/* 경보 등: 꺼짐은 조용하게, 켜짐은 색 */
+.lamps { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 5px; align-content: start; }
+.lamp {
+  display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 3px;
+  background: #ECEFEF; color: var(--muted); font-size: 12px; flex-wrap: wrap;
+}
+.lamp i { width: 9px; height: 9px; border-radius: 50%; background: #C3CBCF; flex: none; }
+.lamp em { font-style: normal; font-size: 12px; width: 100%; color: var(--signal); }
+.lamp.on { color: var(--ink); font-weight: 700; background: #fff; box-shadow: inset 0 0 0 1.5px currentColor; }
+.lamp.det.on { color: #0F6E96; } .lamp.det.on i { background: var(--det); }
+.lamp.eff.on { color: #A84A0C; } .lamp.eff.on i { background: var(--eff); }
+.lamp.a2.on { color: var(--ink2); } .lamp.a2.on i { background: #8C949C; }
+.lamp.intent.on { color: var(--signal); } .lamp.intent.on i { background: var(--paint); }
+.lamp.hit.on { color: var(--danger); } .lamp.hit.on i { background: var(--danger); }
+.lamp.flag.on { color: var(--signal); } .lamp.flag.on i { background: var(--paint); }
+.lamp.on span, .lamp.on em { color: var(--ink); }
+.lamp.on em { font-weight: 500; }
+
+/* 참고 신뢰도 */
+.ref-row { display: flex; justify-content: space-between; gap: 12px; font-variant-numeric: tabular-nums; font-size: 12px; }
+.ref-row b { font-family: var(--font-num); font-weight: 600; font-size: 14px; }
+
+/* 3. 그래프: 기록지 위 펜 기록 */
+#chartBox { position: relative; padding: 0; min-height: 0; }
+#chart { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+/* 탭 */
+#tabs { padding: 0; display: flex; flex-direction: column; }
+.tabbar { display: flex; border-bottom: 1px solid var(--line); padding: 0 4px; }
+.tab {
+  flex: 1; font: inherit; font-size: 12.5px; color: var(--ink2); background: transparent; border: 0; border-bottom: 2px solid transparent;
+  padding: 6px 8px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: -1px;
+}
+.tab:hover { color: var(--ink); }
+.tab.active { color: var(--ink); border-bottom-color: var(--ink); font-weight: 600; }
+.tab-sum { color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
+.tabpane { padding: 6px 12px; display: grid; gap: 12px; overflow: hidden; } /* 한 열 7줄 이하 */
+.tabpane[hidden] { display: none; }
+/* 탭마다 내용에 맞춘 고정 높이 (값이 바뀌어도 그래프 높이가 흔들리지 않게). 남는 높이는 그래프로 */
+.tabpane[data-pane="score"] { height: 128px; grid-template-columns: 190px minmax(0, 1fr); }
+.tabpane[data-pane="context"] { height: 130px; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.6fr); }
+.tabpane[data-pane="scenario"] { height: 144px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr); }
+.tabpane[data-pane="provenance"] { height: 156px; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: auto 1fr; row-gap: 4px; overflow: visible; }
+.prov-col { min-width: 0; }
+.prov-col.evidence { border-right: 1px solid var(--line); padding-right: 10px; }
+.prov-title { font-size: 12px; font-weight: 600; color: var(--ink); margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.prov-title .bad { font-weight: 500; }
+#provJson { margin-left: auto; white-space: nowrap; }
+.prov-head { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; }
+.prov-source { font-size: 12.5px; font-weight: 700; padding: 0 8px; border-radius: 3px; border: 1.5px solid var(--line); }
+.prov-source.sample { color: var(--sample); border-color: #E2709B; }
+.prov-source.server { color: var(--ok); border-color: #7CC29C; }
+.prov-local { color: var(--muted); font-size: 12px; }
+.json-pop { width: min(560px, 50vw); }
+.json-bar { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.json-bar button { font-size: 12px; cursor: pointer; background: var(--control-bg); color: var(--ink); border: 1px solid var(--control-border); border-radius: 3px; padding: 1px 8px; }
+#provJsonText { margin: 0; max-height: 50vh; overflow: auto; font: 12px/1.4 ui-monospace, Consolas, monospace; color: var(--ink2); white-space: pre; }
+
+/* 누적량 막대 계기 */
+.acc { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; align-items: end; }
+.acc-flags { display: flex; flex-direction: column; gap: 4px; }
+.vbar { text-align: center; }
+.vtrack { position: relative; height: 72px; width: 22px; margin: 0 auto; background: #DCE2E4; border-radius: 2px; overflow: visible; }
+.vtrack i { position: absolute; left: 0; right: 0; bottom: 0; border-radius: 2px; }
+.vtrack b { position: absolute; left: -5px; right: -5px; height: 2px; background: var(--ink); }
+.vtrack span { position: absolute; left: 28px; transform: translateY(50%); font: 500 12px var(--font-num); color: var(--ink2); }
+.vval { font: 600 16px/1.2 var(--font-num); font-variant-numeric: tabular-nums; margin-top: 3px; }
+.vlbl { font-size: 12px; color: var(--ink2); }
+
+/* 키-값 목록: 값은 표지판 숫자 */
+dl.kv { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 0 8px; font-size: 12px; line-height: 1.35; }
+dl.kv.two { grid-template-columns: auto 1fr auto 1fr; column-gap: 10px; }
+dl.kv dt { color: var(--ink2); white-space: nowrap; }
+dl.kv dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; color: var(--ink); }
+
+/* 최근 로그 (최근 5줄) */
+ul.log { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+ul.log li { padding: 1px 0; border-bottom: 1px solid #DDE3E5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+ul.log li .t { color: var(--muted); display: inline-block; min-width: 48px; font-family: var(--font-num); font-variant-numeric: tabular-nums; }
+ul.log li.empty { color: var(--muted); }
+
+/* 주행 화면 왼쪽 아래 도크: 자차 반응 요약 + 작은 키 (도로 왼쪽 여백 안, 하단 고정 문구 위) */
+#roadDock {
+  position: absolute; left: 10px; bottom: 64px; z-index: 6;
+  width: clamp(178px, calc(50cqw - 5.25 * min(100cqh / 67, 100cqw / 14) - 18px), 300px);
+  container: dock / inline-size;
+  display: flex; flex-direction: column; gap: 6px; padding: 7px 8px;
+  color: #E6EAED; background: rgba(22, 27, 32, .82); border-radius: 4px; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .07);
+}
+#egoSummary h3 { margin: 0 0 2px; font-size: 12px; font-weight: 600; color: #C3CBD1; }
+#egoSummary dl.kv dt, #keyNote { color: #93A0A9; }
+#egoSummary dl.kv dd { color: #F0F3F5; }
+#egoSummary dl.kv { font-size: 12px; gap: 0 4px; align-items: baseline; }
+#egoSummary dl.kv dd { font: 600 14px/1.35 var(--font-num); }
+#egoSummary dl.kv dd { white-space: nowrap; overflow-wrap: normal; }
+.krow { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 4px; align-items: center; }
+.krow[data-indent="1"] { padding-left: 10px; }
+.krow[data-indent="2"] { padding-left: 18px; }
+#keys { --k: max(28px, calc((100cqw - 16px) / 5)); }
+.key {
+  position: relative; width: var(--k); height: 54px; gap: 3px; border-radius: 4px; color: #E6EAED;
+  background: var(--asphalt-2); border: 1px solid #4A535D; box-shadow: 0 2px 0 #12171B;
+  /* 번호는 모든 키에서 같은 높이(위에서 7px), 설명은 그 아래부터 (한 줄·두 줄이어도 번호 위치가 같게) */
+  display: flex; flex-direction: column; align-items: center; justify-content: flex-start; padding-top: 7px;
+}
+.key .cap { font: 600 15px/1 var(--font-num); flex: none; }
+/* 키캡 안 짧은 설명 (12px). 좁은 도크에서는 두 줄 (keys.ts descHtml) */
+.key .desc {
+  display: block; font-size: 12px; line-height: 1.1; text-align: center; color: #AEB8BF;
+  word-break: keep-all; max-width: 100%;
+}
+/* 아주 좁은 도크(1024px 근처, 키 폭 < 34px): 세 글자도 안 들어가므로 툴팁(title)으로 */
+@container dock (max-width: 179px) {
+  .key { height: 32px; justify-content: center; padding-top: 0; }
+  .key .desc { display: none; }
+}
+/* 넓은 도크(키 폭 ≥ 47px): 설명 한 줄 */
+@container dock (min-width: 251px) {
+  .key { height: 46px; }
+  .key .desc { white-space: nowrap; }
+  #btnStop { height: 46px; max-width: 80px; white-space: normal; word-break: keep-all; line-height: 1.15; }
+}
+.key.pressed { background: #F0F3F5; color: var(--ink); border-color: #fff; box-shadow: 0 0 0 #12171B; transform: translateY(2px); }
+.key.pressed .desc { color: var(--ink2); }
+/* 깜빡이 ON 지속 표식: 눌림(밝은 배경)과 별개인 주황 테두리 + ON 배지 */
+.key.signal-on { outline: 2px solid var(--eff-glow); outline-offset: 1px; }
+.key.signal-on::after {
+  content: "ON"; position: absolute; top: -9px; right: -9px; font: 700 12px/1.2 var(--font-num);
+  background: var(--eff-glow); color: #431407; padding: 0 3px; border-radius: 3px;
+}
+.key.scenario-on { outline: 2px solid var(--eff-glow); outline-offset: 1px; }
+.key.blocked { background: #4A2522; border-color: #E06B60; color: #FFD0CA; }
+#btnStop {
+  height: 32px; padding: 0 6px; border-radius: 4px; cursor: pointer;
+  background: var(--asphalt-2); color: #E6EAED; border: 1px solid #4A535D; font-size: 12px;
+}
+#keyNote { font-size: 12px; line-height: 1.35; }
+
+/* 디버그: #debug 일 때만, 주행 화면 위에 떠 있는 창 */
+#debug {
+  position: fixed; right: 10px; bottom: 10px; z-index: 60; width: min(460px, 40vw); max-height: 48vh;
+  display: flex; flex-direction: column; box-shadow: 0 10px 30px rgba(26, 38, 50, .3);
+}
+#debug[hidden] { display: none; }
+.dbg-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; font-weight: 600; color: var(--ink2); margin-bottom: 4px; }
+.dbg-label { font-size: 12px; color: var(--muted); margin: 2px 0; }
+#msgLatest, #msgLog {
+  margin: 0; overflow: auto; background: #fff; border: 1px solid var(--line); border-radius: 3px; padding: 4px 6px;
+  font: 12px/1.35 ui-monospace, Consolas, monospace; white-space: pre-wrap; word-break: break-all;
+}
+#msgLatest { max-height: 46px; color: #0F6E96; margin-bottom: 2px; }
+#msgLog { flex: 1; min-height: 80px; color: var(--ink2); }
+#msgLog div { border-bottom: 1px solid #E3E8EA; padding: 1px 0; }
+#msgLog .cmd { color: #A84A0C; }
+#msgLog .note { color: var(--muted); font-style: italic; }
+
+/* 오버레이 카드 공통: 기록지 한 장, 위쪽 띠 색이 종류 (정지 = 차선 노랑, 오류 = 빨강, 연결 = 잉크) */
+.pause-card, .err-card, .conn-card {
+  background: var(--sheet); color: var(--ink); border-radius: 4px; padding: 18px 24px 20px; max-width: 440px; text-align: center;
+  border-top: 5px solid var(--ink); box-shadow: 0 16px 48px rgba(0, 0, 0, .45);
+}
+
+/* 정지 오버레이 (주행 화면 위) */
+#pauseOverlay {
+  position: absolute; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center; padding: 16px;
+  background: rgba(18, 22, 26, .62); backdrop-filter: blur(1.5px);
+}
+#pauseOverlay[hidden] { display: none; }
+.pause-card { border-top-color: var(--paint); }
+.pause-title { font-size: 21px; font-weight: 700; margin-bottom: 6px; }
+.pause-reason { font-size: 13.5px; margin-bottom: 6px; }
+.pause-note { font-size: 12px; color: var(--ink2); margin-bottom: 14px; }
+.pause-resume {
+  font-size: 15px; font-weight: 700; padding: 9px 30px; border-radius: 4px; cursor: pointer;
+  background: var(--paint); color: var(--ink); border: 0; box-shadow: 0 2px 0 #B98E10;
+}
+.pause-resume:hover:not(:disabled) { background: #F6CD4E; }
+.pause-resume:disabled { opacity: .45; cursor: default; box-shadow: none; }
+
+/* 1001~1150px: 값 줄바꿈이 늘어나는 탭만 높이를 늘린다 */
+@media (min-width: 1001px) and (max-width: 1150px) {
+  .tabpane[data-pane="context"] { height: 146px; }
+  .tabpane[data-pane="provenance"] { height: 240px; }
+}
+
+/* 좁은 화면(1000px 미만): 도로 위 · 패널 아래, 페이지 세로 스크롤 허용 */
+@media (max-width: 1000px) {
+  body { height: auto; overflow: auto; }
+  #app { grid-template-columns: 1fr; }
+  #roadPane { height: 78vh; min-height: 480px; box-shadow: none; }
+  #panel { overflow: visible; grid-template-rows: auto auto auto 240px; }
+  #statusBar { flex-wrap: wrap; row-gap: 2px; }
+  .tabpane { height: auto; grid-template-columns: 1fr !important; }
+  .trust-grid { grid-template-columns: 1fr 1fr; }
+  .trust-grid .lamps { grid-column: 1 / -1; }
+  .dial:nth-child(2) { border-right: 0; }
+  #debug { width: calc(100vw - 20px); }
+}
+
+/* 안내 4단계: 마스크(구멍 = 활성 키 묶음) + 말풍선 */
+#tutorialOverlay { position: fixed; inset: 0; z-index: 50; cursor: pointer; }
+#tutorialOverlay[hidden] { display: none; }
+.tut-mask { position: absolute; inset: 0; display: block; }
+.tut-ring { fill: none; stroke: var(--paint); stroke-width: 2.5; }
+.tut-bubble {
+  position: absolute; width: min(380px, calc(100vw - 24px)); padding: 12px 16px 14px; border-radius: 4px;
+  background: var(--sheet); color: var(--ink); border-left: 5px solid var(--paint); box-shadow: 0 16px 48px rgba(0, 0, 0, .45);
+}
+.tut-step { font: 600 13px var(--font-num); color: var(--ink2); margin-bottom: 4px; }
+.tut-text { font-size: 14.5px; line-height: 1.55; }
+.tut-extra { font-size: 12.5px; color: var(--ink2); margin-top: 6px; }
+.tut-extra[hidden] { display: none; }
+.tut-foot { font-size: 12.5px; margin-top: 10px; color: var(--ink); font-weight: 600; }
+.tut-r { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+/* 서버 연결 상태 (서버 모드) */
+#connOverlay { position: fixed; inset: 0; z-index: 55; display: flex; align-items: center; justify-content: center; background: rgba(18, 22, 26, .7); }
+#connOverlay[hidden] { display: none; }
+#connOverlay.failed .conn-card { border-top-color: var(--danger); }
+.conn-title { font-size: 18px; font-weight: 700; margin-bottom: 6px; }
+#connOverlay.failed .conn-title { color: var(--danger); }
+.conn-detail { font-size: 12.5px; color: var(--ink2); margin-bottom: 10px; overflow-wrap: anywhere; }
+.conn-retry { font-weight: 700; padding: 6px 18px; border-radius: 4px; cursor: pointer; background: var(--ink); color: #fff; border: 0; }
+.conn-retry[hidden] { display: none; }
+#testBar select:disabled { opacity: .5; }
+
+/* #debug 서버 시험 도구 */
+.dbg-tools { display: flex; flex-wrap: wrap; gap: 4px; margin: 2px 0 4px; font-size: 12px; }
+.dbg-tools[hidden] { display: none; }
+.dbg-tools button, .dbg-tools select { font-size: 12px; cursor: pointer; background: var(--control-bg); color: var(--ink); border: 1px solid var(--control-border); border-radius: 3px; padding: 1px 6px; font-family: var(--font-ui); }
+.dbg-tools label { color: var(--ink2); }
+.prov-local.bad { color: var(--danger); }
+
+/* 오류 카드 · 토스트 · 운전 잠금 표시 */
+#errorOverlay { position: fixed; inset: 0; z-index: 58; display: flex; align-items: center; justify-content: center; background: rgba(18, 22, 26, .72); }
+#errorOverlay[hidden] { display: none; }
+.err-card { border-top-color: var(--danger); }
+.err-title { font-size: 18px; font-weight: 700; color: var(--danger); margin-bottom: 6px; }
+.err-body { font-size: 13.5px; margin-bottom: 6px; }
+.err-code { font: 500 12px var(--font-num); color: var(--muted); margin-bottom: 14px; letter-spacing: .02em; }
+.err-actions { display: flex; gap: 8px; justify-content: center; }
+.err-actions button { font-weight: 700; padding: 7px 18px; border-radius: 4px; cursor: pointer; background: var(--ink); color: #fff; border: 0; }
+.err-actions button + button { background: transparent; color: var(--ink); box-shadow: inset 0 0 0 1.5px var(--ink); }
+#errorToast {
+  position: fixed; top: 44px; left: 50%; transform: translateX(-50%); z-index: 59; padding: 6px 14px; border-radius: 4px;
+  background: var(--ink); color: #F6F0D8; font-size: 12.5px; border-left: 4px solid var(--paint); box-shadow: 0 8px 24px rgba(0, 0, 0, .3);
+}
+#errorToast[hidden] { display: none; }
+#lockBadge {
+  position: absolute; right: 18px; top: 74px; z-index: 5; max-width: 60%; padding: 2px 9px; border-radius: 3px;
+  background: rgba(22, 27, 32, .85); color: #FBE6A2; font-size: 12px; border-left: 3px solid var(--paint);
+}
+#lockBadge[hidden] { display: none; }
+#keyNote .lock { color: #FBE6A2; font-weight: 600; }
+
+@media (prefers-reduced-motion: reduce) {
+  .key.pressed { transform: none; }
+  #hudToggle .switch, #hudToggle .switch::after { transition: none; }
+}
+
+/* 세로가 넉넉한 화면: 신뢰도 게이지를 키운다 (그래프 높이가 충분할 때만) */
+@media (min-height: 900px) and (min-width: 1001px) {
+  .dial svg.arc { max-width: 150px; }
+}
