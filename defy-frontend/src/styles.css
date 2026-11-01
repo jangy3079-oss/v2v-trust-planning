@@ -405,34 +405,6 @@ ul.log li.empty { color: var(--muted); }
 }
 
 /* ---- 자동 모드 (명세 1.3). 자동 세션에서만 요소가 생긴다 ---- */
-/* 시작 카드 (서버 모드 · 자동 지원 서버만): 연결 카드와 같은 기록지, 위쪽 띠는 차선 노랑 */
-#startCard {
-  position: fixed; inset: 0; z-index: 70; display: flex; align-items: center; justify-content: center; padding: 16px;
-  background: rgba(18, 22, 26, .62);
-}
-.start-card {
-  background: var(--sheet); color: var(--ink); border-radius: 4px; padding: 18px 24px 20px; width: min(440px, 100%);
-  border-top: 5px solid var(--paint); box-shadow: 0 16px 48px rgba(0, 0, 0, .45); display: flex; flex-direction: column; gap: 10px;
-}
-.start-title { font-size: 21px; font-weight: 700; }
-.start-card fieldset { border: 0; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; }
-.start-card legend { font-size: 12px; font-weight: 600; color: var(--ink2); padding: 0; margin-bottom: 4px; width: 100%; }
-.start-opt { display: inline-flex; align-items: center; gap: 5px; font-size: 14px; cursor: pointer; }
-.start-opt:has(input:disabled) { color: var(--muted); cursor: default; }
-.start-auto { display: flex; flex-direction: column; gap: 8px; padding: 8px 10px; background: var(--card2); border-radius: 4px; }
-.start-auto[hidden] { display: none; }
-.start-seed { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--ink2); }
-.start-seed input { flex: 1; min-width: 0; font: 14px var(--font-num); padding: 3px 6px; border: 1px solid var(--line); border-radius: 3px; background: #fff; color: var(--ink); }
-.start-note { font-size: 12px; color: var(--ink2); width: 100%; }
-.start-note[hidden] { display: none; }
-.start-bad { color: var(--danger); }
-#startGo {
-  align-self: center; font-size: 15px; font-weight: 700; padding: 9px 36px; border-radius: 4px; cursor: pointer;
-  background: var(--paint); color: var(--ink); border: 0; box-shadow: 0 2px 0 #B98E10;
-}
-#startGo:hover:not(:disabled) { background: #F6CD4E; }
-#startGo:disabled { opacity: .45; cursor: default; box-shadow: none; }
-
 /* 주행 화면 도크: 자동 상태 (자차 반응 요약과 키 사이) */
 #autoBox { font-size: 12px; line-height: 1.35; color: #E6EAED; }
 #autoBox[hidden] { display: none; }

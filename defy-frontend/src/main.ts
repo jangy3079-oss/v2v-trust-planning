@@ -8,7 +8,7 @@ import '@fontsource/barlow-semi-condensed/600.css';
 import './styles.css';
 import type { ClientMessage, DemoConfig, DemoEvent, Snapshot } from './contracts';
 import { createSessionBody, readConfig, readEvent, readSnapshot, snapshotOrder, type EventView, type SnapshotView } from './contract-access';
-import { DATA_SOURCE, SERVER_BASE_URL } from './config';
+import { AUTO_START_LEVEL, DATA_SOURCE, FORCE_MANUAL, SERVER_BASE_URL } from './config';
 import { SAMPLE_DEMO_CONFIG, STATIC_FRAMES } from './source/fixtures';
 import { createSamplePlayer } from './source/sample-player';
 import { createServerSource, fetchAutoDriveAvailable, fetchDemoConfig, type LinkState, type SnapshotKind } from './source/ws-client';
@@ -17,7 +17,6 @@ import { createChartHistory, createChartView } from './view/chart';
 import { createPanel } from './view/panel';
 import { createKeysView } from './view/keys';
 import { createAutoView } from './view/auto';
-import { showStartCard } from './ui/start';
 import { createRenderBuffer } from './view/interp';
 import { esc } from './view/format';
 import { createInputController, type SendKind } from './input/controller';
@@ -103,7 +102,7 @@ function boot(demoConfig: DemoConfig): void {
     link: null as LinkState | null,                     // 서버 모드 연결 상태
     fatal: null as string | null,                       // 세션을 더 쓸 수 없는 오류 코드 (운전 잠금)
     lock: null as string | null,                        // 지금 표시 중인 운전 잠금 이유
-    autoRequested: false,                               // 시작 카드에서 자동을 골랐음 (지원 안 함 토스트 1회)
+    autoRequested: false,                               // 자동 세션을 요청했음 (지원 안 함 토스트 1회)
   };
 
   // ---- 수신: 샘플 재생기·정적 프레임·서버(ready/telemetry/ack) 공통 ----
@@ -423,13 +422,11 @@ function boot(demoConfig: DemoConfig): void {
     sel.innerHTML = '<option>서버 모드 (?source=server)</option>';
     sel.disabled = true;
     provenance.setSource('server');
-    // 자동 모드를 지원하는 서버만 시작 카드 (엔진·조종 방식). 아니면(목업·health 실패) 기존처럼 바로 {} 로 rule 세션
+    // 자동 모드를 지원하는 서버면 바로 자동 세션 {auto_drive, auto_level}. 아니면(목업·health 실패) 또는 ?mode=manual 이면 기존처럼 {} 로 rule 세션
     void (async () => {
-      if (!(await fetchAutoDriveAvailable(SERVER_BASE_URL))) return serverSource.start();
-      connUi.hide();
-      const opts = await showStartCard(cfg.availableSolvers);
-      state.autoRequested = !!opts.auto;
-      return serverSource.start(createSessionBody(opts));
+      if (FORCE_MANUAL || !(await fetchAutoDriveAvailable(SERVER_BASE_URL))) return serverSource.start();
+      state.autoRequested = true;
+      return serverSource.start(createSessionBody({ solver: 'rule', auto: { level: AUTO_START_LEVEL, seed: null } }));
     })();
   } else {
     // 샘플 모드: 샘플 재생(기본) 또는 정적 확인 프레임

@@ -48,6 +48,7 @@ export function createAutoView(dock: HTMLElement, keysEl: HTMLElement, cfg: Conf
 
     const b = ensureBox();
     b.hidden = false;
+    b.title = AUTO_TEXT.randomTip;
     const head = `<h3>${esc(AUTO_TEXT.status)} · ${esc(autoLevelLabel(a))} · seed ${esc(a.seed)}</h3>`;
     if (a.state === 'manual') {
       const reason = a.stoppedReason ? AUTO_STOP[a.stoppedReason] : '—';
@@ -58,7 +59,8 @@ export function createAutoView(dock: HTMLElement, keysEl: HTMLElement, cfg: Conf
     const ev = a.state === 'event' || a.state === 'recover' ? ` · ${esc(autoEventLabel(cfg, a.eventKind))}` : '';
     const next = a.state === 'wait' && a.nextEventIn != null ? `<div class="auto-next">${esc(AUTO_TEXT.nextIn(a.nextEventIn))}</div>` : '';
     const keys = `<div class="auto-keys" title="${esc(AUTO_TEXT.driverKeysTip)}">${esc(AUTO_TEXT.driverKeys)}: [${v.inputs.heldApplied.map(esc).join(', ')}]</div>`;
-    b.innerHTML = `${head}<div class="auto-state">${esc(AUTO_STATE[a.state])}${ev}</div>${next}${keys}`;
+    b.innerHTML = `${head}<div class="auto-state">${esc(AUTO_STATE[a.state])}${ev}</div>${next}${keys}`
+      + `<div class="auto-hint">${esc(AUTO_TEXT.keyTakesOver)}</div>`;
   }
 
   return { render };

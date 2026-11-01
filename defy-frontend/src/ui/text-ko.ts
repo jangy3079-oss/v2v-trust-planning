@@ -2,7 +2,7 @@
  * 사용자 화면 문구 (오류·정지·운전 잠금). 문구는 이 파일에서만 고친다.
  * 서버가 보낸 message·details 는 화면에 그대로 내보내지 않는다 (콘솔·디버그 로그에만). stack trace 노출 금지.
  */
-import type { AutoDriveLevel, AutoDriveState, AutoStopReason, ErrorCode, PauseReason, Solver } from '../contracts';
+import type { AutoDriveLevel, AutoDriveState, AutoStopReason, ErrorCode, PauseReason } from '../contracts';
 
 export interface ErrorText { title: string; body: string }
 
@@ -46,24 +46,6 @@ export const LOCK_TEXT = {
 };
 
 // ---- 자동 모드 (명세 1.3, v1.5). 서버 auto.log 의 text 는 서버 문자열 그대로 표시한다 ----
-// 시작 카드 (서버 모드 · auto_drive_available=true 일 때만)
-export const START_TEXT = {
-  title: '세션 시작',
-  solver: '자차 계산 엔진',
-  solverName: { rule: 'rule (기본)', nmpc: 'nmpc' } satisfies Record<Solver, string>,
-  mode: '이웃차 조종',
-  direct: '직접 조종',
-  auto: '자동 모드 (가상 운전자)',
-  autoNmpc: '자동 모드는 rule에서만 검증되었습니다',
-  level: '위험도',
-  seed: '시드 (선택)',
-  seedPlaceholder: '비우면 서버가 정함',
-  seedInvalid: '시드는 0 이상의 정수입니다',
-  tutorialNote: '안내를 끝내면 자동 주행이 시작됩니다 (안내는 건너뛸 수 없습니다).',
-  randomNote: '무작위·시드는 가상 운전자의 입력 순서에만 쓰입니다. 시뮬레이션 잡음은 매번 같습니다.',
-  go: '시작',
-};
-
 export const AUTO_LEVEL: Record<AutoDriveLevel, string> = { low: '낮음', normal: '보통', high: '높음', random: '무작위' };
 export const AUTO_STATE: Record<AutoDriveState, string> = {
   cruise: '보통 주행 (첫 대기 전)', wait: '다음 이벤트 대기', event: '이벤트 중', recover: '회복 중', manual: '직접 조종으로 바뀜',
@@ -78,6 +60,8 @@ export const AUTO_TEXT = {
   levelRandomNow: (now: string) => `무작위 · 지금 ${now}`,
   nextIn: (s: number) => `다음 이벤트까지 ${s.toFixed(1)}초`,
   manualBack: 'R을 누르면 자동 주행으로 돌아갑니다',
+  keyTakesOver: '키를 누르면 직접 조종으로 바뀝니다',
+  randomTip: '무작위·시드는 가상 운전자의 입력 순서에만 쓰입니다. 시뮬레이션 잡음(배경 흔들림·관측 잡음)은 매번 같습니다.',
   tutorialLine: '자동 모드: 안내를 끝내면 가상 운전자가 이웃차를 운전합니다. 키를 누르면 직접 조종으로 바뀝니다.',
   unsupported: '자동 모드를 지원하지 않아 직접 조종으로 시작했습니다',
   stopButtonTip: '자동 주행 중에 누르면 직접 조종으로 바뀝니다',

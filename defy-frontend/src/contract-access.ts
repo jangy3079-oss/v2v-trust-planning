@@ -54,7 +54,6 @@ export interface ConfigView {
   tutorial: { step: TutorialStep; highlightCodes: string[]; text: string }[];
   banner: string;
   kDrainDefault: number;
-  availableSolvers: Solver[];
 }
 
 export interface VehicleView {
@@ -353,7 +352,6 @@ export function readConfig(c: DemoConfig): ConfigView {
     tutorial: c.tutorial.map(t => ({ step: t.step, highlightCodes: t.highlight_codes, text: t.text })),
     banner: c.banner,
     kDrainDefault: c.defaults.k_drain,
-    availableSolvers: c.available_solvers,
   };
 }
 
