@@ -75,10 +75,12 @@ class Bridge:
         self.ses = self.A.Session(solver=solver)
         self.prev_u = (0.0, 0.0)
         self.driver = None
+        self.resume_stop = False  # auto_resume 이 넣은 0 → 다음 스텝의 auto_stop (scenario.stopped 로 기록)
         if auto:  # 자동 모드 (명세 1.3). 수동 세션은 driver 없이 기존 경로 그대로
             if str(HERE) not in sys.path:
                 sys.path.append(str(HERE))  # -I 로 실행되어 스크립트 폴더가 경로에 없다. 15c 모듈보다 뒤에 둔다
-            from auto_driver import AutoDriver
+            from auto_driver import AUTO, AutoDriver
+            self.auto_idle_s = AUTO["manual_idle_s"]
             log = HERE / "logs" / f"auto_{auto.get('session_id', 'local')}_{auto['seed']}.jsonl" if auto.get("log", True) else None
             self.driver = AutoDriver(auto["seed"], auto.get("level", "normal"), log_path=log,
                                      meta=dict(session_id=auto.get("session_id"), solver=solver), SM=self.SM)
@@ -87,6 +89,7 @@ class Bridge:
     def reset(self):
         self.ses.reset()
         self.prev_u = (0.0, 0.0)
+        self.resume_stop = False
         if self.driver:
             self.driver.reset()
         return self.parts(False)
@@ -95,6 +98,15 @@ class Bridge:
         if self.driver:
             self.driver.halt(self.ses, reason)
         return None
+
+    def auto_resume(self):
+        """수동 → 자동 (입력 없음, session.ts 가 센다). 장면은 그대로, 정리 키(0·깜빡이)는 다음 스텝 전에 넣는다."""
+        if not self.driver:
+            return None
+        for k in self.driver.resume(self.ses):
+            self.resume_stop |= k == "0"
+            self.ses.key(k)
+        return self.driver.status(self.ses)
 
     # ---- 한 스텝
     def step(self, held, actions, takeover=None):
@@ -127,7 +139,7 @@ class Bridge:
     def auto_step(self, held, actions, takeover):
         """자동 세션 한 스텝. 운전자 조종 중이면 운전자 키만, 개입한 스텝부터는 사람 입력만 쓴다 (섞지 않는다)."""
         ses, drv = self.ses, self.driver
-        stop = False
+        stop, self.resume_stop = self.resume_stop, False
         if takeover and drv.state != "manual":
             for k in drv.handback(ses, takeover):  # 운전자가 건 것만 정리 (0 / 깜빡이 끔)
                 stop |= k == "0"
@@ -227,6 +239,7 @@ class Bridge:
         P["ego_control"] = self.ego_control(sampled)
         if self.driver:
             P["auto"] = self.driver.status(ses)
+            P["auto_idle_s"] = self.auto_idle_s
         return P
 
     def ego_control(self, sampled):
@@ -287,6 +300,8 @@ def main():
                 data = b.step(req.get("held", []), req.get("actions", []), req.get("takeover"))
             elif cmd == "auto_halt":
                 data = b.auto_halt(req.get("reason", ""))
+            elif cmd == "auto_resume":
+                data = b.auto_resume()
             else:
                 raise ValueError(f"unknown cmd {cmd}")
             resp = dict(id=req["id"], ok=True, data=clean(data))

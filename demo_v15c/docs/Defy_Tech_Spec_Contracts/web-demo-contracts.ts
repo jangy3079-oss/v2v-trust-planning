@@ -3,6 +3,7 @@
  * Spec 1.2 (v15c-fix): lane-anchored ego targets, NMPC as planner (policy_target_y_m / nmpc_override added).
  * Spec 1.4: optional auto drive (server-side virtual driver for the neighbor). Additive only; protocol stays v1.
  * Spec 1.5: auto drive risk level, server-chosen seed, hand-back to manual on human input. Additive only.
+ * Spec 1.6: auto drive takes over again after 10 s without human input (auto_resume_in_s). Additive only.
  * Normative behavior: WEB_DEMO_TECH_SPEC.md.
  * JSON numbers must be finite; integer IDs/cursors must be safe integers.
  * All object fields are required unless marked ?. Unknown request fields fail.
@@ -321,7 +322,8 @@ export interface ScenarioReport {
 
 // 1.4 auto drive. cruise = before the first countdown, wait = counting down to the next event,
 // event = an event is running, recover = event over, waiting for the recovery condition.
-// 1.5: manual = a human input/command took over; the driver stays off until reset (R) brings it back.
+// 1.5: manual = a human input/command took over. 1.6: manual → recover after 10 s of running time without human input
+// (the driver takes over from the current state, no reset); reset (R) still restarts from the beginning.
 export type AutoDriveState = "cruise" | "wait" | "event" | "recover" | "manual";
 // 1.5: random switches among low/normal/high every 30–60 s.
 export type AutoDriveLevel = "low" | "normal" | "high" | "random";
@@ -334,6 +336,7 @@ export interface AutoDriveStatus {
   level: "low" | "normal" | "high"; // 1.5: level in effect now (changes over time when level_setting is random)
   state: AutoDriveState;
   stopped_reason?: AutoStopReason | null; // 1.5: set only in manual
+  auto_resume_in_s?: number | null; // 1.6: seconds left until the driver takes over again, only in manual (null otherwise); counts only while running
   event_kind: string | null; // ScenarioKind or "cut_in"; null outside event/recover
   next_event_in_s: number | null; // only in wait
   edge_margin_m: number; // 5.25 − (|neighbor y| + 0.9): distance from the neighbor body to the road edge

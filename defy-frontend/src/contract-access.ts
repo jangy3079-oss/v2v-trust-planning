@@ -201,6 +201,7 @@ export interface AutoView {
   level: AutoDriveStatus['level'];
   state: AutoDriveState;
   stoppedReason: AutoStopReason | null;
+  resumeIn: number | null; // auto_resume_in_s (manual 일 때만)
   eventKind: string | null;
   nextEventIn: number | null;
   edgeMargin: number;
@@ -429,7 +430,7 @@ export function readSnapshot(s: Snapshot): SnapshotView {
     },
     auto: s.auto && s.auto.enabled ? {
       seed: s.auto.seed, levelSetting: s.auto.level_setting, level: s.auto.level, state: s.auto.state,
-      stoppedReason: s.auto.stopped_reason ?? null, eventKind: s.auto.event_kind, nextEventIn: s.auto.next_event_in_s,
+      stoppedReason: s.auto.stopped_reason ?? null, resumeIn: s.auto.auto_resume_in_s ?? null, eventKind: s.auto.event_kind, nextEventIn: s.auto.next_event_in_s,
       edgeMargin: s.auto.edge_margin_m, log: s.auto.log.map(l => ({ t: l.t_s, text: l.text })),
     } : null,
   };

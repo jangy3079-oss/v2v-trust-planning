@@ -1,7 +1,7 @@
 /*
  * 자동 모드 표시 (명세 1.3, v1.5). Snapshot.auto 가 있을 때만 요소를 만든다 → 수동 세션의 화면·DOM 은 그대로.
  * - 주행 화면 도크: 상태 · 이벤트 종류 · 위험도(무작위면 지금 단계) · 시드, 다음 이벤트까지(wait 일 때만)
- * - manual: 수동 복귀 사유(stopped_reason → text-ko 문구)와 "R 로 자동 복귀"
+ * - manual: 수동 복귀 사유(stopped_reason → text-ko 문구)와 자동 복귀까지 남은 초(auto_resume_in_s, 없으면 "R 로 자동 복귀")
  * - 키 그림: 운전자 조종 중 서버 inputs.held_applied 를 운전자 키로 따로 표시 (사람 눌림 .pressed 와 구분)
  * - [시나리오 해제 (0)] 툴팁: 운전자 조종 중 누르면 직접 조종으로 바뀐다
  * 값은 서버 값 그대로이며 다시 계산하지 않는다. edge_margin_m 는 강조하지 않는다.
@@ -53,7 +53,7 @@ export function createAutoView(dock: HTMLElement, keysEl: HTMLElement, cfg: Conf
     if (a.state === 'manual') {
       const reason = a.stoppedReason ? AUTO_STOP[a.stoppedReason] : '—';
       b.innerHTML = `${head}<div class="auto-state manual">${esc(AUTO_STATE.manual)} · ${esc(reason)}</div>
-        <div class="auto-hint">${esc(AUTO_TEXT.manualBack)}</div>`;
+        <div class="auto-hint">${esc(a.resumeIn != null ? AUTO_TEXT.manualResumeIn(a.resumeIn) : AUTO_TEXT.manualBack)}</div>`;
       return;
     }
     const ev = a.state === 'event' || a.state === 'recover' ? ` · ${esc(autoEventLabel(cfg, a.eventKind))}` : '';

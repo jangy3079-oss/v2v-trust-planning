@@ -28,7 +28,7 @@ export function isControl(b: CommandBody): b is ControlBody {
 // 브리지가 돌려주는 시뮬레이션 부분 (bridge.py parts())
 type Parts = Pick<Snapshot, 'vehicles' | 'observation' | 'model' | 'ego_control' | 'plant' | 'scenario' | 'next_weave'> & {
   report: ScenarioReport | null; a_user_mps2: number; r_cmd_radps: number;
-  auto?: AutoDriveStatus; auto_held?: DriveKey[]; auto_stop?: boolean; // 자동 세션만 (bridge.py auto_step)
+  auto?: AutoDriveStatus; auto_held?: DriveKey[]; auto_stop?: boolean; auto_idle_s?: number; // 자동 세션만 (bridge.py auto_step·parts)
 };
 
 // 자동 모드 (명세 1.3). null = 수동 세션: 아래 자동 분기는 모두 건너뛴다
@@ -57,6 +57,7 @@ export function createSession(id: string, token: string, solver: Solver, auto: A
   let created = false;
   let autoOn = false;                               // 자동 세션에서 운전자가 조종 중 (manual 이 아님)
   let takeover: AutoStopReason | null = null;       // 다음 스텝에 브리지로 넘길 사람 개입
+  let idleTicks = 0, idleLimit = 0;                 // manual 에서 사람 입력 없이 지난 running 스텝 수 · 한도 (AUTO.manual_idle_s ÷ DT)
 
   const simTime = () => (tick + 1) * DT;
   const sampleTime = () => (tick >= 0 ? tick * DT : null);
@@ -81,7 +82,7 @@ export function createSession(id: string, token: string, solver: Solver, auto: A
     P = created ? callBridge<Parts>({ cmd: 'reset' })
       : callBridge<Parts>(auto ? { cmd: 'new', solver, auto: { ...auto, session_id: id } } : { cmd: 'new', solver });
     created = true;
-    if (auto) { autoOn = true; takeover = null; } // R: 같은 설정·같은 시드로 자동 복귀
+    if (auto) { autoOn = true; takeover = null; idleTicks = 0; idleLimit = Math.round(P.auto_idle_s! / DT); } // R: 같은 설정·같은 시드로 처음부터
     prev = { det: false, eff: false, collisions: 0, scenStart: null, scenKind: null, signal: 'off' };
     events = []; eventSeq = 0; undrained = []; graph = [];
     pushEvent(kind, kind === 'session.created' ? '세션 생성 (실제 15c)' : '초기화 — 새 세대, 안내 0단계');
@@ -93,6 +94,13 @@ export function createSession(id: string, token: string, solver: Solver, auto: A
     if (!auto || !autoOn) return;
     autoOn = false;
     takeover ??= reason;
+    idleTicks = 0;
+  }
+  // 자동 세션: manual 에서 사람 입력 없이 idleLimit 스텝 → 현재 장면에서 운전자가 이어받는다 (R 과 달리 세대·안내·기록은 그대로)
+  function autoResume(): void {
+    const st = callBridge<AutoDriveStatus>({ cmd: 'auto_resume' });
+    P = { ...P, auto: st };
+    autoOn = true; idleTicks = 0;
   }
   // 자동 세션: phase 가 running 밖으로 나가면 운전자 정지를 브리지에 알린다 (기록용. 스텝이 멈추므로 키도 멈춘다)
   function autoHalt(reason: string): void {
@@ -165,6 +173,16 @@ export function createSession(id: string, token: string, solver: Solver, auto: A
       alarm_det: P.model!.alarms.alarm_det, alarm_eff: P.model!.alarms.alarm_eff, active: P.model!.context.active,
     });
     if (graph.length > HISTORY_LIMIT) graph.shift();
+    // 입력 없음 카운트: running 스텝에서만 센다 (정지·끊김·오류 중에는 스텝이 없다). 사람 키·명령이 있으면 처음부터
+    if (auto && !autoOn) {
+      idleTicks = driving.length > 0 || heldApplied.length > 0 ? 0 : idleTicks + 1;
+      if (idleTicks >= idleLimit) {
+        try { autoResume(); } catch (err) {
+          console.error('[real] auto_resume failed', err);
+          setError({ code: 'INTERNAL_ERROR', message: '모델 실행 중 오류가 발생했습니다', retryable: true, details: {} });
+        }
+      }
+    }
     stepMs = r4(performance.now() - t0);
     frameSeq += 1;
   }
@@ -238,7 +256,7 @@ export function createSession(id: string, token: string, solver: Solver, auto: A
       tutorial: phase === 'tutorial' || (phase === 'paused' && resumePhase === 'tutorial')
         ? { step: tutorialStep, completed: false } : { step: null, completed: tutorialStep == null },
       runtime: { connected, step_ms: stepMs, lag_ms: lagMs, pause_reason: pauseReason, resume_phase: resumePhase, error: runtimeError },
-      ...(auto && P.auto ? { auto: P.auto } : {}),
+      ...(auto && P.auto ? { auto: { ...P.auto, auto_resume_in_s: P.auto.state === 'manual' && !autoOn ? r4((idleLimit - idleTicks) * DT) : null } } : {}),
     };
   }
 
@@ -270,6 +288,7 @@ export function createSession(id: string, token: string, solver: Solver, auto: A
         if (held.length === 0 && tap.length === 0) return;
         handBack('human_input');
       }
+      if (auto && (held.length > 0 || tap.length > 0)) idleTicks = 0; // manual: 사람 키가 오면 입력 없음 카운트를 처음부터
       heldReceived = [...held];
       for (const k of tap) tapped.add(k);
       lastRecvSeq = clientSeq; inputConn = connectionId;

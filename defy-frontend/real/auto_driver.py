@@ -1,5 +1,5 @@
 """자동 모드(가상 운전자, 명세 1.3 · v1.5). 시연자와 같은 입구(WASD 눌림 집합, Q/E, 1~5/0)만 쓴다. 이웃 상태를 직접 바꾸지 않는다.
-흐름: cruise → wait → event(접근 → 이벤트) → recover → wait … · 사람이 개입하면 manual (R 로 자동 복귀).
+흐름: cruise → wait → event(접근 → 이벤트) → recover → wait … · 사람이 개입하면 manual (입력 없이 manual_idle_s 가 지나면 recover 로 이어받음, R 은 처음부터).
 결정은 틱 단위이고 난수는 auto_seed 로 시드한 PRNG 만 쓴다 → 같은 시드·같은 solver·같은 단계면 같은 행동 스케줄."""
 import json
 import math
@@ -37,6 +37,7 @@ AUTO = dict(
     cut_in_steer_timeout_s=8.0, cut_in_hold_s=3.0,
     recover_tol_m=0.5,                   # 회복 완료: 자기 차로 중심 ±0.5 m (명세 1.3)
     recover_timeout_s=60.0,              # 회복이 이보다 오래 걸리면 기록하고 대기로 넘어간다
+    manual_idle_s=10.0,                  # 수동 복귀 뒤 사람 입력이 이만큼 없으면 자동으로 이어받는다 (running 스텝만 센다, real/session.ts)
     log_ui=20,
 )
 LATERAL = ("drift", "stuck", "weave")
@@ -351,6 +352,36 @@ class AutoDriver:
         self.state, self.stopped_reason, self.event, self.phase = "manual", reason, None, None
         self.my_inj_k0 = self.my_signal = None
         self.note(t, k, f"수동 복귀 ({'사람 입력' if reason == 'human_input' else '사람 명령'})", reason=reason, cleanup=keys)
+        return keys
+
+    # ---- 입력 없음 → 자동으로 이어받음 (장면·PRNG 는 그대로)
+    def resume(self, ses):
+        """사람이 켠 횡방향 시나리오는 0 으로, 켠 깜빡이는 같은 키로 끈다(handback 과 같은 입구). brake/accel 은 원본이 끝내게 둔다."""
+        if self.state != "manual":
+            return []
+        sim = ses.sim
+        k = sim.k + 1
+        t = k * self.DT
+        keys = []
+        inj = sim.inj
+        if inj is not None and inj["kind"] in LATERAL:
+            keys.append("0")
+        sig = "Q" if sim.sig_l else "E" if sim.sig_r else None
+        if sig:
+            keys.append(sig)
+        y = float(sim.neighbor_vehicle.state[1])
+        W = self.W
+        c = max(-W, min(W, W * round(y / W)))  # 이웃의 현재 차로 중심 (도로 밖이면 가까운 바깥 차로)
+        ego_c = W * round(float(sim.ego[1]) / W)
+        if c == ego_c:  # 자차 차로에 두고 떠났다 → 그대로 두면 간격 유지(gap_cruise_m)가 자차 쪽으로 가속한다. 가까운 옆 차로로
+            side = 1.0 if y >= ego_c else -1.0
+            c = ego_c + side * W if abs(ego_c + side * W) <= W else ego_c - side * W
+        self.home_c = c
+        self.state, self.stopped_reason, self.event = "recover", None, None
+        self.set_phase("recover", k)
+        self.my_inj_k0 = self.my_signal = None
+        self.lane_keeping = False
+        self.note(t, k, f"자동 복귀 (입력 없음 {AUTO['manual_idle_s']:g}초)", kind="resume", cleanup=keys, y=round(y, 3), home_c=self.home_c)
         return keys
 
     def halt(self, ses, reason):
