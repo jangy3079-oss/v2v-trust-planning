@@ -20,6 +20,7 @@ import {
   type GraphPointView,
 } from '../contract-access';
 import { helloMessage } from '../input/messages';
+import type { RoadResponse } from '../road-geometry';
 
 export type SnapshotKind = 'ready' | 'telemetry' | 'ack' | 'rest';
 
@@ -388,6 +389,15 @@ export function createServerSource(base: string, sink: ServerSink, opts: ServerS
       if (!sessionId) return;
       failed = false; attempt = 0;
       reconnectLater('다시 시도');
+    },
+
+    // 계약 외: 굽은 도로 곡률 구간 (GET /sessions/{id}/road). 이 경로가 없는 서버(404)면 null → 직선 도로
+    async fetchRoad(): Promise<RoadResponse | null> {
+      if (!sessionId || !token) return null;
+      const res = await fetch(`${base}/sessions/${sessionId}/road`, { headers: auth(), cache: 'no-store' });
+      if (res.status === 404) return null;
+      if (!res.ok) throw await httpFail(res);
+      return (await res.json()) as RoadResponse;
     },
 
     // 시험용 목업 경로 (계약 외)

@@ -3,6 +3,8 @@ import type { ConfigView, ModelView, SnapshotView, VehicleView } from '../contra
 import { FONT_UI } from './theme';
 import { fitCanvas, makeCamera, type Camera } from './camera';
 import { fmt, fmtSigned, kmh, LABEL } from './format';
+import type { Road } from '../road-geometry';
+import { makeRoadFrame, type RoadFrame } from './road-frame';
 
 export interface RoadScene {
   ego: VehicleView;   // 표시 시각의 자차 (2단계부터 보간값)
@@ -11,6 +13,7 @@ export interface RoadScene {
   view: SnapshotView; // 최신 표본 (경보·HUD 값은 보간하지 않음)
   showHud: boolean;   // 속도·v_ref·간격·dx 표 (기본 숨김, 토글). 차량 옆 km/h 라벨은 항상
   avoid: ScreenRect[]; // 캔버스 위에 떠 있는 DOM(왼쪽 아래 도크 등) 영역. 라벨·화면 밖 표식이 피해 간다
+  road: Road;          // 굽은 도로 (계약 외). 차량 x/y 는 도로 기준 (s, 횡위치) 로 보고 그 위에 얹어 그린다
 }
 
 export interface ScreenRect { x: number; y: number; w: number; h: number }
@@ -20,6 +23,9 @@ const hitsAny = (rs: readonly ScreenRect[], x: number, y: number, w: number, h: 
 const BLINK_PERIOD_S = 0.3; // 명세 3.1: 300ms 켬 / 300ms 끔
 const DASH_PERIOD_M = 12;
 const DASH_LEN_M = 4;
+const ROAD_STEP_M = 2;        // 경계선 꺾은선 간격
+const ROAD_MARGIN_M = 20;     // 화면 위·아래 밖으로 더 그리는 길이 (곡선에서 옆으로 들어오는 부분)
+const TURN_PREVIEW_M = 250;   // 이만큼 앞의 회전부터 안내
 
 const COLOR = { ego: '#3b82f6', nb: '#facc15', det: '#38bdf8', eff: '#fb923c', signal: '#fbbf24', hit: '#ef4444' };
 
@@ -60,60 +66,99 @@ export function createRoadView(canvas: HTMLCanvasElement, cfg: ConfigView) {
   if (!ctx) throw new Error('2D canvas 를 사용할 수 없습니다');
   let avoid: ScreenRect[] = [];
 
-  function drawRoadSurface(cam: Camera): void {
+  function drawRoadSurface(cam: Camera, frame: RoadFrame): void {
     const { W, H } = cam;
-    ctx!.fillStyle = '#1F2427'; // 갓길
-    ctx!.fillRect(0, 0, W, H);
+    const c = ctx!;
+    c.fillStyle = '#1F2427'; // 갓길
+    c.fillRect(0, 0, W, H);
 
-    const left = cam.sx(cfg.outerEdges[1]), right = cam.sx(cfg.outerEdges[0]);
-    ctx!.fillStyle = '#33383E'; // 아스팔트
-    ctx!.fillRect(left, 0, right - left, H);
+    const sMin = cam.xAt(H) - ROAD_MARGIN_M, sMax = cam.xAt(0) + ROAD_MARGIN_M;
+    const edge = (d: number): ScreenPt[] => {
+      const pts: ScreenPt[] = [];
+      for (let s = sMin; s < sMax + ROAD_STEP_M; s += ROAD_STEP_M) pts.push(project(cam, frame.pt(s, d)));
+      return pts;
+    };
+    const strokeLine = (pts: ScreenPt[]) => {
+      c.beginPath();
+      pts.forEach((p, i) => (i ? c.lineTo(p.X, p.Y) : c.moveTo(p.X, p.Y)));
+      c.stroke();
+    };
+    const [rightY, leftY] = cfg.outerEdges;
+    const leftEdge = edge(leftY), rightEdge = edge(rightY);
+    tracePolygon(c, [...leftEdge, ...rightEdge.reverse()]);
+    c.fillStyle = '#33383E'; // 아스팔트
+    c.fill();
+    rightEdge.reverse();
 
     // 바깥 경계 실선
-    ctx!.strokeStyle = '#e5e7eb';
-    ctx!.lineWidth = 2;
-    for (const y of cfg.outerEdges) {
-      ctx!.beginPath(); ctx!.moveTo(cam.sx(y), 0); ctx!.lineTo(cam.sx(y), H); ctx!.stroke();
-    }
+    c.strokeStyle = '#e5e7eb';
+    c.lineWidth = 2;
+    strokeLine(leftEdge);
+    strokeLine(rightEdge);
 
-    // 내부 경계 점선: 월드 x 에 고정 → 자차가 전진하면 아래로 흘러간다
-    const xMin = cam.xAt(H), xMax = cam.xAt(0);
-    const k0 = Math.floor(xMin / DASH_PERIOD_M) * DASH_PERIOD_M;
-    ctx!.strokeStyle = '#d1d5db';
+    // 내부 경계 점선: 도로 s 에 고정 → 자차가 전진하면 아래로 흘러간다
+    const k0 = Math.floor(sMin / DASH_PERIOD_M) * DASH_PERIOD_M;
+    c.strokeStyle = '#d1d5db';
     for (const y of cfg.innerEdges) {
-      const px = cam.sx(y);
-      ctx!.beginPath();
-      for (let x = k0; x < xMax; x += DASH_PERIOD_M) {
-        ctx!.moveTo(px, cam.sy(x));
-        ctx!.lineTo(px, cam.sy(x + DASH_LEN_M));
+      c.beginPath();
+      for (let s = k0; s < sMax; s += DASH_PERIOD_M) {
+        const a = project(cam, frame.pt(s, y)), b = project(cam, frame.pt(s + DASH_LEN_M, y));
+        c.moveTo(a.X, a.Y);
+        c.lineTo(b.X, b.Y);
       }
-      ctx!.stroke();
+      c.stroke();
     }
 
-    // 차로 ID (원본 규칙: 0=오른쪽, 1=중앙, 2=왼쪽). 범례는 HUD 에 표시
-    ctx!.font = `bold 13px ${FONT_UI}`;
-    ctx!.textAlign = 'center';
-    ctx!.textBaseline = 'top';
-    ctx!.fillStyle = 'rgba(229,231,235,.6)';
-    for (const l of cfg.lanes) ctx!.fillText(String(l.id), cam.sx(l.centerY), 18);
+    // 차로 ID (원본 규칙: 0=오른쪽, 1=중앙, 2=왼쪽). 화면 위쪽 차로 위치에. 범례는 HUD 에 표시
+    c.font = `bold 13px ${FONT_UI}`;
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    c.fillStyle = 'rgba(229,231,235,.6)';
+    for (const l of cfg.lanes) {
+      const p = project(cam, frame.pt(cam.xAt(25), l.centerY));
+      c.fillText(String(l.id), p.X, p.Y);
+    }
     const legend = '차로 ID ' + [...cfg.lanes].sort((a, b) => a.id - b.id).map(l => `${l.id}=${LABEL.laneSide[l.id] ?? ''}`).join(' · ');
-    ctx!.font = `12px ${FONT_UI}`;
-    ctx!.textAlign = 'right';
-    ctx!.fillText(legend, cam.sx(cfg.outerEdges[1]) - 8, 19);
+    c.font = `12px ${FONT_UI}`;
+    c.textAlign = 'right';
+    c.textBaseline = 'top';
+    const lw = c.measureText(legend).width, lx = cam.sx(leftY) - 8;
+    c.fillStyle = 'rgba(31,36,39,.85)'; // 곡선에서 차로 ID 가 밑으로 지나가도 읽히게
+    c.fillRect(lx - lw - 4, 16, lw + 8, 18);
+    c.fillStyle = 'rgba(229,231,235,.6)';
+    c.fillText(legend, lx, 19);
 
-    // 자차 기준 거리 눈금 (−10 ~ +50m) — 세로 −12~+55m 척도 확인용
-    const edgeX = cam.sx(cfg.outerEdges[0]);
-    ctx!.font = `12px ${FONT_UI}`;
-    ctx!.textAlign = 'left'; ctx!.textBaseline = 'middle';
+    // 자차 기준 거리 눈금 (−10 ~ +50m, 도로를 따라 잰 거리) — 세로 −12~+55m 척도 확인용
+    c.font = `12px ${FONT_UI}`;
+    c.textAlign = 'left'; c.textBaseline = 'middle';
     for (let d = -10; d <= 50; d += 10) {
-      const py = cam.sy(cam.egoX + d);
-      if (py < 0 || py > H) continue;
-      ctx!.strokeStyle = d === 0 ? '#93c5fd' : 'rgba(229,231,235,.45)';
-      ctx!.lineWidth = 1;
-      ctx!.beginPath(); ctx!.moveTo(edgeX + 3, py); ctx!.lineTo(edgeX + 11, py); ctx!.stroke();
-      ctx!.fillStyle = d === 0 ? '#93c5fd' : 'rgba(229,231,235,.6)';
-      ctx!.fillText(`${d > 0 ? '+' : ''}${d} m`, edgeX + 14, py);
+      const p = project(cam, frame.pt(cam.egoX + d, rightY));
+      if (p.Y < 0 || p.Y > H) continue;
+      c.strokeStyle = d === 0 ? '#93c5fd' : 'rgba(229,231,235,.45)';
+      c.lineWidth = 1;
+      c.beginPath(); c.moveTo(p.X + 3, p.Y); c.lineTo(p.X + 11, p.Y); c.stroke();
+      c.fillStyle = d === 0 ? '#93c5fd' : 'rgba(229,231,235,.6)';
+      c.fillText(`${d > 0 ? '+' : ''}${d} m`, p.X + 14, p.Y);
     }
+  }
+
+  // 도로 안내 (계약 외): 지금 회전 중이면 방향·반경, 아니면 다가오는 회전까지 거리
+  function drawRoadInfo(cam: Camera, road: Road): void {
+    const t = road.turnNear(cam.egoX, TURN_PREVIEW_M);
+    if (!t && !road.turnNear(cam.egoX, Infinity)) return; // 앞에 회전이 없는 도로 (직선 도로 포함)
+    const side = t?.turn === 'left' ? '좌' : '우';
+    const arrow = t?.turn === 'left' ? '↰' : '↱';
+    const text = !t ? '↑ 직진 구간'
+      : t.start_s_m <= cam.egoX ? `${arrow} ${side}회전 중 · 반경 ${Math.round(t.radius_m)} m · ${Math.round(t.angle_deg)}°`
+      : `${arrow} ${Math.round(t.start_s_m - cam.egoX)} m 앞 ${side}회전 (${Math.round(t.angle_deg)}°)`;
+    const c = ctx!;
+    c.font = `600 13px ${FONT_UI}`;
+    c.textAlign = 'center'; c.textBaseline = 'middle';
+    const w = c.measureText(text).width + 16, x = cam.W / 2, y = 50;
+    c.fillStyle = 'rgba(0,0,0,.65)';
+    c.fillRect(x - w / 2, y - 11, w, 22);
+    c.fillStyle = t ? '#fde68a' : '#cbd5e1';
+    c.fillText(text, x, y);
   }
 
   // 하단 문구: 왼쪽 = 고정 문구(명세 10.3), 오른쪽 = 척도. 경보 테두리 안쪽에 둔다
@@ -139,8 +184,8 @@ export function createRoadView(canvas: HTMLCanvasElement, cfg: ConfigView) {
   }
 
   // NMPC 예측 궤적: 계획 정보일 뿐 실제 자차 경로가 아니다 (명세 10.3). 점선 + 라벨로 구별
-  function drawNmpcPlan(cam: Camera, view: SnapshotView): void {
-    const plan = view.ec.nmpc?.predicted ?? [];
+  function drawNmpcPlan(cam: Camera, frame: RoadFrame, view: SnapshotView): void {
+    const plan = (view.ec.nmpc?.predicted ?? []).map(q => frame.pt(q.x, q.y));
     if (view.ec.solver !== 'nmpc' || plan.length < 2) return;
     const c = ctx!;
     c.save();
@@ -311,18 +356,21 @@ export function createRoadView(canvas: HTMLCanvasElement, cfg: ConfigView) {
     avoid = scene.avoid;
     const { W, H } = fitCanvas(canvas, ctx!);
     const cam = makeCamera(W, H, scene.ego.x);
-    drawRoadSurface(cam);
+    const frame = makeRoadFrame(scene.road, scene.ego.x);
+    const ego = frame.vehicle(scene.ego), nb = frame.vehicle(scene.nb);
+    drawRoadSurface(cam, frame);
 
     // 명세 3.1: floor(sim_time_s/0.3)%2==0 이면 켬 (부동소수 경계 보호용 1e-9)
     const blinkOn = Math.floor(scene.simTime / BLINK_PERIOD_S + 1e-9) % 2 === 0;
     const ec = scene.view.ec;
 
-    drawNmpcPlan(cam, scene.view);
-    const nbOff = offscreenInfo(cam, scene.nb);
-    if (!nbOff) drawVehicle(cam, scene.nb, COLOR.nb, '이웃', blinkOn);
-    const egoOff = offscreenInfo(cam, scene.ego);
-    if (!egoOff) drawVehicle(cam, scene.ego, COLOR.ego, '자차', blinkOn, ec.hit);
+    drawNmpcPlan(cam, frame, scene.view);
+    const nbOff = offscreenInfo(cam, nb);
+    if (!nbOff) drawVehicle(cam, nb, COLOR.nb, '이웃', blinkOn);
+    const egoOff = offscreenInfo(cam, ego);
+    if (!egoOff) drawVehicle(cam, ego, COLOR.ego, '자차', blinkOn, ec.hit);
 
+    drawRoadInfo(cam, scene.road);
     drawAlarmBorders(cam, scene.view.model);
     if (scene.showHud) drawHud(scene.view, scene.ego);
     drawFooter(cam);
