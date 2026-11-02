@@ -12,7 +12,7 @@ import type {
   ActiveScenario, ApiError, CommandBody, DemoEvent, DriveKey, ErrorCode, EventKind, GraphSample, PauseReason, Phase,
   ScenarioKind, ScenarioParameters, ScenarioReport, SignalSide, Snapshot, Solver, TutorialStep, VehicleState, Zone,
 } from '../src/contracts.ts';
-import { MOCK_DEMO_CONFIG as CFG } from './config.ts';
+import { MOCK_DEMO_CONFIG as CFG, MOCK_ROAD as ROAD_MODE } from './config.ts';
 import type { RoadResponse } from '../src/road-geometry.ts';
 import { createMockRoad } from './road.ts';
 
@@ -27,7 +27,6 @@ const HISTORY_LIMIT = CFG.timing.history_samples;
 const WHEELBASE = 2.7;
 const DRIVE_ORDER: DriveKey[] = ['W', 'A', 'S', 'D'];
 const NB_CURVE_LAG_S = 0.2; // MOCK: 이웃 운전자가 곡률 변화를 따라가는 지연 (곡선에서 최대 약 0.8m 밀림)
-const ROAD_MODE = process.env['MOCK_ROAD'] ?? 'random';
 const newRoadSeed = (): number | null =>
   ROAD_MODE === 'straight' ? null : /^\d+$/.test(ROAD_MODE) ? Number(ROAD_MODE) : Math.floor(Math.random() * 2 ** 31);
 

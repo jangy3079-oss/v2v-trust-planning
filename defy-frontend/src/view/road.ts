@@ -5,6 +5,7 @@ import { fitCanvas, makeCamera, type Camera } from './camera';
 import { fmt, fmtSigned, kmh, LABEL } from './format';
 import type { Road } from '../road-geometry';
 import { makeRoadFrame, type RoadFrame } from './road-frame';
+import { ROAD_TEXT } from '../ui/text-ko';
 
 export interface RoadScene {
   ego: VehicleView;   // 표시 시각의 자차 (2단계부터 보간값)
@@ -129,16 +130,20 @@ export function createRoadView(canvas: HTMLCanvasElement, cfg: ConfigView) {
     c.fillText(legend, lx, 19);
 
     // 자차 기준 거리 눈금 (−10 ~ +50m, 도로를 따라 잰 거리) — 세로 −12~+55m 척도 확인용
+    // 곡선에서는 눈금 열이 옆으로 움직이므로 하단 문구와 겹치는 눈금은 건너뛴다 (하단 문구가 위에 그려져 가린다)
+    const footer = footerLabels(cam).map(l => l.box);
     c.font = `12px ${FONT_UI}`;
     c.textAlign = 'left'; c.textBaseline = 'middle';
     for (let d = -10; d <= 50; d += 10) {
       const p = project(cam, frame.pt(cam.egoX + d, rightY));
       if (p.Y < 0 || p.Y > H) continue;
+      const tickText = `${d > 0 ? '+' : ''}${d} m`;
+      if (hitsAny(footer, p.X + 3, p.Y - 8, 11 + c.measureText(tickText).width, 16)) continue;
       c.strokeStyle = d === 0 ? '#93c5fd' : 'rgba(229,231,235,.45)';
       c.lineWidth = 1;
       c.beginPath(); c.moveTo(p.X + 3, p.Y); c.lineTo(p.X + 11, p.Y); c.stroke();
       c.fillStyle = d === 0 ? '#93c5fd' : 'rgba(229,231,235,.6)';
-      c.fillText(`${d > 0 ? '+' : ''}${d} m`, p.X + 14, p.Y);
+      c.fillText(tickText, p.X + 14, p.Y);
     }
   }
 
@@ -146,11 +151,9 @@ export function createRoadView(canvas: HTMLCanvasElement, cfg: ConfigView) {
   function drawRoadInfo(cam: Camera, road: Road): void {
     const t = road.turnNear(cam.egoX, TURN_PREVIEW_M);
     if (!t && !road.turnNear(cam.egoX, Infinity)) return; // 앞에 회전이 없는 도로 (직선 도로 포함)
-    const side = t?.turn === 'left' ? '좌' : '우';
-    const arrow = t?.turn === 'left' ? '↰' : '↱';
-    const text = !t ? '↑ 직진 구간'
-      : t.start_s_m <= cam.egoX ? `${arrow} ${side}회전 중 · 반경 ${Math.round(t.radius_m)} m · ${Math.round(t.angle_deg)}°`
-      : `${arrow} ${Math.round(t.start_s_m - cam.egoX)} m 앞 ${side}회전 (${Math.round(t.angle_deg)}°)`;
+    const text = !t ? ROAD_TEXT.straight
+      : t.start_s_m <= cam.egoX ? ROAD_TEXT.turning(t.turn === 'left', Math.round(t.radius_m), Math.round(t.angle_deg))
+      : ROAD_TEXT.ahead(t.turn === 'left', Math.round(t.start_s_m - cam.egoX), Math.round(t.angle_deg));
     const c = ctx!;
     c.font = `600 13px ${FONT_UI}`;
     c.textAlign = 'center'; c.textBaseline = 'middle';
@@ -162,24 +165,26 @@ export function createRoadView(canvas: HTMLCanvasElement, cfg: ConfigView) {
   }
 
   // 하단 문구: 왼쪽 = 고정 문구(명세 10.3), 오른쪽 = 척도. 경보 테두리 안쪽에 둔다
-  function drawFooter(cam: Camera): void {
+  // 하단 문구 자리 (drawFooter 와 거리 눈금이 같이 쓴다). 넓으면 한 줄(왼쪽 배너·오른쪽 척도), 좁으면 왼쪽 두 줄
+  function footerLabels(cam: Camera): { text: string; x: number; y: number; box: ScreenRect }[] {
     const c = ctx!;
     const scaleText = `척도 ${cam.s.toFixed(1)} px/m (종·횡 동일) · 세로 ${fmtSigned(cam.xAt(cam.H) - cam.egoX, 0)} ~ ${fmtSigned(cam.xAt(0) - cam.egoX, 0)} m`;
     c.font = `12px ${FONT_UI}`;
-    c.textBaseline = 'middle';
     const y = cam.H - 28;
-    const label = (text: string, x: number, yy: number) => {
-      const w = c.measureText(text).width;
-      c.fillStyle = 'rgba(0,0,0,.65)'; c.fillRect(x - 6, yy - 10, w + 12, 20);
-      c.fillStyle = '#cbd5e1'; c.textAlign = 'left'; c.fillText(text, x, yy);
-    };
     const sw = c.measureText(scaleText).width, bw = c.measureText(cfg.banner).width;
-    if (sw + bw + 60 <= cam.W) {
-      label(cfg.banner, 24, y);
-      label(scaleText, cam.W - 24 - sw, y);
-    } else { // 좁으면 두 줄
-      label(scaleText, 24, y - 20);
-      label(cfg.banner, 24, y);
+    const at = (text: string, w: number, x: number, yy: number) => ({ text, x, y: yy, box: { x: x - 6, y: yy - 10, w: w + 12, h: 20 } });
+    return sw + bw + 60 <= cam.W
+      ? [at(cfg.banner, bw, 24, y), at(scaleText, sw, cam.W - 24 - sw, y)]
+      : [at(scaleText, sw, 24, y - 20), at(cfg.banner, bw, 24, y)];
+  }
+
+  function drawFooter(cam: Camera): void {
+    const c = ctx!;
+    const labels = footerLabels(cam);
+    c.textBaseline = 'middle';
+    for (const l of labels) {
+      c.fillStyle = 'rgba(0,0,0,.65)'; c.fillRect(l.box.x, l.box.y, l.box.w, l.box.h);
+      c.fillStyle = '#cbd5e1'; c.textAlign = 'left'; c.fillText(l.text, l.x, l.y);
     }
   }
 

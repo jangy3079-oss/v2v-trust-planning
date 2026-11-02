@@ -79,3 +79,9 @@ export const AUTO_TEXT = {
   logEmpty: '(기록 없음)',
 };
 
+// 굽은 도로 회전 안내 배지 (계약 외, view/road.ts)
+export const ROAD_TEXT = {
+  straight: '↑ 직진 구간',
+  turning: (left: boolean, radiusM: number, angleDeg: number) => `${left ? '↰ 좌' : '↱ 우'}회전 중 · 반경 ${radiusM} m · ${angleDeg}°`,
+  ahead: (left: boolean, distM: number, angleDeg: number) => `${left ? '↰' : '↱'} ${distM} m 앞 ${left ? '좌' : '우'}회전 (${angleDeg}°)`,
+};

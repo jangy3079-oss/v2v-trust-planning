@@ -391,12 +391,17 @@ export function createServerSource(base: string, sink: ServerSink, opts: ServerS
       reconnectLater('다시 시도');
     },
 
-    // 계약 외: 굽은 도로 곡률 구간 (GET /sessions/{id}/road). 이 경로가 없는 서버(404)면 null → 직선 도로
+    // 계약 외: 굽은 도로 곡률 구간 (GET /sessions/{id}/road). 이 경로가 없는 서버면 null → 직선 도로
+    // 없는 경로 응답: 목업 이전 서버는 404, 실제 15c 서버(real/server.ts)는 400 INVALID_ARGUMENT("경로 없음")
     async fetchRoad(): Promise<RoadResponse | null> {
       if (!sessionId || !token) return null;
       const res = await fetch(`${base}/sessions/${sessionId}/road`, { headers: auth(), cache: 'no-store' });
       if (res.status === 404) return null;
-      if (!res.ok) throw await httpFail(res);
+      if (!res.ok) {
+        const err = await httpFail(res);
+        if (err.status === 400 && err.code === 'INVALID_ARGUMENT') return null;
+        throw err;
+      }
       return (await res.json()) as RoadResponse;
     },
 
