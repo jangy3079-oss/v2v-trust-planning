@@ -4,6 +4,7 @@
  * Spec 1.4: optional auto drive (server-side virtual driver for the neighbor). Additive only; protocol stays v1.
  * Spec 1.5: auto drive risk level, server-chosen seed, hand-back to manual on human input. Additive only.
  * Spec 1.6: auto drive takes over again after 10 s without human input (auto_resume_in_s). Additive only.
+ * Spec 1.7: GET /sessions/{id}/road (RoadResponse), display-only curved road. Simulation stays straight. Additive only.
  * Normative behavior: WEB_DEMO_TECH_SPEC.md.
  * JSON numbers must be finite; integer IDs/cursors must be safe integers.
  * All object fields are required unless marked ?. Unknown request fields fail.
@@ -434,6 +435,32 @@ export interface EventsResponse {
   latest_event_seq: number | null;
   truncated: boolean;
   events: DemoEvent[];
+}
+
+// GET /sessions/{id}/road (spec 1.7, 5.2). Display only: x_m = distance s along the road centerline,
+// y_m = lateral offset d from the centerline (left +), psi_rad = heading relative to the road tangent.
+// The 15c simulation is straight; curvature never reaches dynamics or the detector.
+// A server without this path may answer 400 INVALID_ARGUMENT; clients then draw a straight road.
+export interface RoadPiece {
+  s0_m: number;
+  s1_m: number;
+  k0_1pm: number; // curvature at s0_m, 1/m, left +
+  k1_1pm: number; // curvature at s1_m; linear in s between
+}
+export interface RoadTurnInfo {
+  turn: "left" | "right";
+  start_s_m: number; // includes transition curves
+  end_s_m: number;
+  radius_m: number;
+  angle_deg: number;
+}
+export interface RoadResponse {
+  generation: number; // current generation; a new road per generation (session.created / session.reset)
+  generator: "defy-road-v1";
+  seed: number | null; // road seed for reproduction (independent of auto_seed); null = straight
+  covered_until_m: number; // pieces are complete for s < covered_until_m (a piece may end past it); request again before reaching it
+  pieces: RoadPiece[]; // sorted by s0_m; s outside every piece has curvature 0
+  turns: RoadTurnInfo[];
 }
 
 export interface HelloMessage {

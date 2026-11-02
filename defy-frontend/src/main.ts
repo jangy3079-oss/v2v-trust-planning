@@ -133,7 +133,7 @@ function boot(demoConfig: DemoConfig): void {
     mergeEvents(o.generation, events);
   }
 
-  // 굽은 도로 (계약 외): 샘플은 고정 도로, 서버는 generation 마다 GET /road. 받기 전·실패·404 면 직선
+  // 굽은 도로 (명세 5.2): 샘플은 고정 도로, 서버는 generation 마다 GET /road. 받기 전·실패·/road 없는 서버(400)면 직선
   const roadState = {
     road: (ROAD_STRAIGHT || server ? STRAIGHT_ROAD : createRoad(SAMPLE_ROAD)) as Road,
     generation: null as number | null,

@@ -1,14 +1,16 @@
 /*
  * 실제 15c 세션. 물리·탐지·누적기·자차 회피는 모두 demo_v15c 의 Session (bridge.py 가 감싼다).
  * 여기서는 계약의 세션 상태만 관리한다: phase·안내·정지, 입력 커서, 이벤트, 그래프 이력, 시나리오 보고.
+ * 도로: 세대마다 새 굽은 도로 (shared/road.ts, 명세 5.2). 화면 표시용이라 브리지에는 넘기지 않는다 (15c 는 직선 그대로).
  * server.ts 가 쓰는 인터페이스는 mock/session.ts 와 같다.
  */
 import type {
   ApiError, AutoDriveLevel, AutoDriveStatus, AutoStopReason, CommandBody, DemoEvent, DriveKey, ErrorCode, EventKind, GraphSample,
-  PauseReason, Phase, ScenarioKind, ScenarioReport, Snapshot, Solver, TutorialStep,
+  PauseReason, Phase, RoadResponse, ScenarioKind, ScenarioReport, Snapshot, Solver, TutorialStep,
 } from '../src/contracts.ts';
-import { MOCK_DEMO_CONFIG as CFG } from './config.ts';
+import { MOCK_DEMO_CONFIG as CFG, REAL_ROAD } from './config.ts';
 import { callBridge } from './bridge-sync.ts';
+import { createRoadGenerator, roadSeedFor } from '../shared/road.ts';
 
 export const DT = 0.1;
 const LAST_STEP = (CFG.tutorial.length - 1) as TutorialStep;
@@ -58,6 +60,7 @@ export function createSession(id: string, token: string, solver: Solver, auto: A
   let autoOn = false;                               // 자동 세션에서 운전자가 조종 중 (manual 이 아님)
   let takeover: AutoStopReason | null = null;       // 다음 스텝에 브리지로 넘길 사람 개입
   let idleTicks = 0, idleLimit = 0;                 // manual 에서 사람 입력 없이 지난 running 스텝 수 · 한도 (AUTO.manual_idle_s ÷ DT)
+  let road = createRoadGenerator(null);             // 세대마다 새로 (자동 복귀는 세대가 그대로라 도로도 그대로)
 
   const simTime = () => (tick + 1) * DT;
   const sampleTime = () => (tick >= 0 ? tick * DT : null);
@@ -82,6 +85,9 @@ export function createSession(id: string, token: string, solver: Solver, auto: A
     P = created ? callBridge<Parts>({ cmd: 'reset' })
       : callBridge<Parts>(auto ? { cmd: 'new', solver, auto: { ...auto, session_id: id } } : { cmd: 'new', solver });
     created = true;
+    const roadSeed = roadSeedFor(REAL_ROAD);
+    road = createRoadGenerator(roadSeed);
+    console.log(`[real] road ${id} generation=${generation} seed=${roadSeed ?? 'straight'}`); // 재현용 (자동 seed 와 별개)
     if (auto) { autoOn = true; takeover = null; idleTicks = 0; idleLimit = Math.round(P.auto_idle_s! / DT); } // R: 같은 설정·같은 시드로 처음부터
     prev = { det: false, eff: false, collisions: 0, scenStart: null, scenKind: null, signal: 'off' };
     events = []; eventSeq = 0; undrained = []; graph = [];
@@ -266,6 +272,8 @@ export function createSession(id: string, token: string, solver: Solver, auto: A
     get phase() { return phase; },
     get autoDriving() { return !!auto && autoOn; }, // 운전자 조종 중: 입력 TTL 면제 (명세 1.3)
     snapshot, step, control, systemPause, setError,
+    // 가장 앞 차량 = 마지막 브리지 결과(P)의 자차·이웃 x 중 큰 값. 그 앞 3000m 까지 이어 붙여 보낸다
+    road(): RoadResponse { return road.response(generation, Math.max(P.vehicles.ego.x_m, P.vehicles.neighbor.x_m)); },
     history(afterTick: number) {
       const from = graph[0]?.sample_tick ?? null;
       return {

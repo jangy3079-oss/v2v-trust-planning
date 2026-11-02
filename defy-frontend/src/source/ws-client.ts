@@ -13,14 +13,13 @@
  */
 import type {
   ClientMessage, CommandMessage, CreateSessionRequest, CreateSessionResponse, DemoConfig, DemoEvent, ErrorResponse, EventsResponse,
-  HealthResponse, HistoryResponse, ServerMessage, Snapshot,
+  HealthResponse, HistoryResponse, RoadResponse, ServerMessage, Snapshot,
 } from '../contracts';
 import {
   readApiError, readCreateSession, readEventsResponse, readHealth, readHistory, readSentCommand, readServerMessage, snapshotOrder,
   type GraphPointView,
 } from '../contract-access';
 import { helloMessage } from '../input/messages';
-import type { RoadResponse } from '../road-geometry';
 
 export type SnapshotKind = 'ready' | 'telemetry' | 'ack' | 'rest';
 
@@ -391,7 +390,7 @@ export function createServerSource(base: string, sink: ServerSink, opts: ServerS
       reconnectLater('다시 시도');
     },
 
-    // 계약 외: 굽은 도로 곡률 구간 (GET /sessions/{id}/road). 이 경로가 없는 서버면 null → 직선 도로
+    // 굽은 도로 곡률 구간 (GET /sessions/{id}/road, 명세 5.2). 이 경로가 없는 서버면 null → 직선 도로
     // 없는 경로 응답: 우리 서버(real/server.ts, mock/server.ts)는 400 INVALID_ARGUMENT("경로 없음")
     // 404 분기는 방어용 — 404를 주는 서버는 확인하지 못했다
     async fetchRoad(): Promise<RoadResponse | null> {

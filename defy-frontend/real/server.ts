@@ -158,10 +158,11 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
     return send(res, 201, payload);
   }
 
-  const m = path.match(new RegExp(`^${BASE}/sessions/([^/]+)(/history|/events)?$`));
+  const m = path.match(new RegExp(`^${BASE}/sessions/([^/]+)(/history|/events|/road)?$`));
   if (m) {
     const e = authorize(req, res, m[1]!);
     if (!e) return;
+    if (method === 'GET' && m[2] === '/road') return send(res, 200, e.s.road()); // 명세 5.2: 표시용 굽은 도로
     if (method === 'DELETE' && !m[2]) {
       e.conn?.ws.close(1000, 'session deleted');
       sessions.delete(m[1]!);

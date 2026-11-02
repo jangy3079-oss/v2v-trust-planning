@@ -3,18 +3,17 @@
  *  - 이웃차: W/S 목표 가속 2초 램프, A/D 요레이트 명령(±0.05rad/s, 0.05rad/s² 증가, 0.3초 감쇠), 시나리오 5종 근사
  *  - 자차: 차선 유지 + 앞차 따라가기 + 이웃 진로 침범 시 감속·옆 차로 이동 (MOCK)
  *  - 신뢰도·경보: 이웃의 횡 편차·횡속도·가감속으로 만든 단순 누적 함수 (MOCK)
- *  - 도로: 세대(reset)마다 새 seed 로 굽은 도로 (road.ts). x/y/psi 는 도로 기준 좌표 (s, 횡위치, 접선 기준 방향각).
+ *  - 도로: 세대(reset)마다 새 seed 로 굽은 도로 (shared/road.ts). x/y/psi 는 도로 기준 좌표 (s, 횡위치, 접선 기준 방향각).
  *    이웃 운전자는 곡률을 늦게 따라가 곡선 진입 때 바깥쪽, 빠질 때 안쪽으로 밀린다. MOCK_ROAD=straight 면 직선, 숫자면 고정 seed
  *  - 입력 커서(held_applied, last_*_input_seq), runtime.step_ms·lag_ms, server_time 은 실제로 잰 값
  * 계약 형식은 src/contracts.ts 타입을 그대로 따른다 (타입만 import).
  */
 import type {
   ActiveScenario, ApiError, CommandBody, DemoEvent, DriveKey, ErrorCode, EventKind, GraphSample, PauseReason, Phase,
-  ScenarioKind, ScenarioParameters, ScenarioReport, SignalSide, Snapshot, Solver, TutorialStep, VehicleState, Zone,
+  RoadResponse, ScenarioKind, ScenarioParameters, ScenarioReport, SignalSide, Snapshot, Solver, TutorialStep, VehicleState, Zone,
 } from '../src/contracts.ts';
 import { MOCK_DEMO_CONFIG as CFG, MOCK_ROAD as ROAD_MODE } from './config.ts';
-import type { RoadResponse } from '../src/road-geometry.ts';
-import { createMockRoad } from './road.ts';
+import { createRoadGenerator, roadSeedFor } from '../shared/road.ts';
 
 export const DT = 0.1;
 const SUBSTEPS = 10;
@@ -27,8 +26,6 @@ const HISTORY_LIMIT = CFG.timing.history_samples;
 const WHEELBASE = 2.7;
 const DRIVE_ORDER: DriveKey[] = ['W', 'A', 'S', 'D'];
 const NB_CURVE_LAG_S = 0.2; // MOCK: 이웃 운전자가 곡률 변화를 따라가는 지연 (곡선에서 최대 약 0.8m 밀림)
-const newRoadSeed = (): number | null =>
-  ROAD_MODE === 'straight' ? null : /^\d+$/.test(ROAD_MODE) ? Number(ROAD_MODE) : Math.floor(Math.random() * 2 ** 31);
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 const smooth = (u: number) => (u <= 0 ? 0 : u >= 1 ? 1 : u * u * (3 - 2 * u));
@@ -72,7 +69,7 @@ export function createSession(id: string, token: string, solver: Solver) {
   let runtimeError: ApiError | null = null;
 
   let ego: Car, nb: Car, egoVy = 0;
-  let road = createMockRoad(null);
+  let road = createRoadGenerator(null);
   let rFollow = 0; // 이웃 운전자가 도로를 따라가려고 내는 요레이트 (곡률 × 속도를 지연 추종)
   let signal: SignalSide = 'off';
   let signalOffAt = -Infinity;
@@ -127,7 +124,7 @@ export function createSession(id: string, token: string, solver: Solver) {
     ego = { x: 0, y: 0, psi: 0, v: CFG.defaults.ego_speed_mps, a: 0, steer: 0, r: 0 };
     nb = { x: CFG.defaults.gap_m, y: LANES[CFG.defaults.neighbor_lane_id] ?? 3.5, psi: 0, v: CFG.defaults.neighbor_speed_mps, a: 0, steer: 0, r: 0 };
     egoVy = 0; signal = 'off'; signalOffAt = -Infinity;
-    road = createMockRoad(newRoadSeed()); rFollow = 0;
+    road = createRoadGenerator(roadSeedFor(ROAD_MODE)); rFollow = 0;
     aUser = 0; rampFrom = 0; rampTarget = 0; rampT = 2; rCmd = 0;
     clearInputs(); lastRecvSeq = null; lastAppliedSeq = null; inputConn = null;
     scen = null; lastReport = null; weaveIdx = 0;

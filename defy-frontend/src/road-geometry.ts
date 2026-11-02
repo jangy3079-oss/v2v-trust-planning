@@ -1,20 +1,10 @@
 /*
- * 굽은 도로 (계약 외 확장). 도로 모양의 원본은 서버이고, 화면은 서버가 보낸 곡률 구간으로 중심선을 적분해 그린다.
+ * 굽은 도로 (명세 5.2, v1.7). 도로 모양의 원본은 서버이고, 화면은 서버가 보낸 곡률 구간으로 중심선을 적분해 그린다.
  *
  * 좌표 해석: 계약의 x_m = 도로 중심선을 따라간 거리 s, y_m = 중심선 기준 횡위치 (왼쪽 +), psi_rad = 도로 접선 기준 방향각.
  * 차로 중심(−3.5/0/3.5)·경계는 계약 그대로다. 곡률 구간이 없거나 끝난 뒤는 직선으로 본다.
  */
-
-// GET /api/v1/sessions/{id}/road (계약 외). 서버가 없거나 404 면 직선 도로
-export interface RoadResponse {
-  generation: number;
-  generator: 'defy-road-v1';
-  seed: number | null;         // 기록용. 화면은 pieces 만 쓴다
-  covered_until_m: number;     // 이 s 까지 pieces 가 있다. 그 뒤는 다시 받는다
-  pieces: { s0_m: number; s1_m: number; k0_1pm: number; k1_1pm: number }[]; // 곡률이 s0→s1 동안 k0→k1 로 선형 변화 (왼쪽 +)
-  turns: RoadTurnInfo[];       // 회전 구간 (완화곡선 포함). 직진·좌·우 중 한 방향으로만 이어진다
-}
-export interface RoadTurnInfo { turn: 'left' | 'right'; start_s_m: number; end_s_m: number; radius_m: number; angle_deg: number }
+import type { RoadResponse, RoadTurnInfo } from './contracts';
 
 export interface RoadPose { x: number; y: number; theta: number }
 

@@ -5,7 +5,7 @@
  */
 import type { DemoConfig } from '../src/contracts.ts';
 
-// 굽은 도로 (계약 외, road.ts): straight = 직선, 숫자 = 고정 seed, 그 밖 = 세대마다 무작위. 배너와 session.ts 가 함께 쓴다
+// 굽은 도로 (명세 5.2, shared/road.ts): straight = 직선, 숫자 = 고정 seed, 그 밖 = 세대마다 무작위. 배너와 session.ts 가 함께 쓴다
 export const MOCK_ROAD = process.env['MOCK_ROAD'] ?? 'random';
 
 export const MOCK_DEMO_CONFIG: DemoConfig = {

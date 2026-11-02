@@ -1,10 +1,10 @@
 /*
- * 목업 도로 생성기 (계약 외 확장) — 세대마다 seed 로 굽은 도로를 만든다. 실제 15c 서버는 같은 RoadResponse 형식만 맞추면 된다.
+ * 도로 생성기 (명세 5.2, GET /sessions/{id}/road) — 목업(mock/)과 실제 15c 서버(real/)가 같이 쓴다. 세대마다 seed 로 굽은 도로를 만든다.
  *
  * 구간 = [직선 리드] + (직진 | 좌회전 | 우회전) 중 하나. 갈림길은 없다 (교차로 판단 기능 전).
  * 회전 = 완화곡선(곡률 0→κ) + 원호 + 완화곡선(κ→0). 같은 seed → 같은 도로.
  */
-import type { RoadResponse, RoadTurnInfo } from '../src/road-geometry.ts';
+import type { RoadResponse, RoadTurnInfo } from '../src/contracts.ts';
 
 export const ROAD_PARAMS = {
   startStraightM: 300,               // 시작 직선: 안내·탐지기 준비(10초≈250m) 동안은 곧게
@@ -30,8 +30,12 @@ function rng(seed: number): () => number {
   };
 }
 
+// 도로 종류 환경변수 (MOCK_ROAD·REAL_ROAD): straight = 직선(null), 숫자 = 고정 seed, 그 밖(없음 포함) = 세대마다 무작위
+export const roadSeedFor = (mode: string): number | null =>
+  mode === 'straight' ? null : /^\d+$/.test(mode) ? Number(mode) : Math.floor(Math.random() * 2 ** 31);
+
 // seed=null → 직선 도로
-export function createMockRoad(seed: number | null) {
+export function createRoadGenerator(seed: number | null) {
   const pieces: Piece[] = [];
   const turns: RoadTurnInfo[] = [];
   let end = seed == null ? Infinity : ROAD_PARAMS.startStraightM;

@@ -27,6 +27,7 @@ const DASH_LEN_M = 4;
 const ROAD_STEP_M = 2;        // 경계선 꺾은선 간격
 const ROAD_MARGIN_M = 20;     // 화면 위·아래 밖으로 더 그리는 길이 (곡선에서 옆으로 들어오는 부분)
 const TURN_PREVIEW_M = 250;   // 이만큼 앞의 회전부터 안내
+const TICK_COL_W = 70;        // 거리 눈금 열 폭 (눈금선 + "+50 m")
 
 const COLOR = { ego: '#3b82f6', nb: '#facc15', det: '#38bdf8', eff: '#fb923c', signal: '#fbbf24', hit: '#ef4444' };
 
@@ -208,7 +209,18 @@ export function createRoadView(canvas: HTMLCanvasElement, cfg: ConfigView) {
     c.fillText('NMPC 계획 (실제 경로 아님)', cam.sx(last.y) + 6, cam.sy(last.x));
   }
 
-  function drawVehicle(cam: Camera, v: VehicleView, color: string, label: string, blinkOn: boolean, hit = false): void {
+  // 거리 눈금 열 (drawRoadSurface 의 눈금이 놓이는 오른쪽 도로 끝 바깥). 곡선에서는 도로를 따라 휘므로 ROAD_STEP_M 조각으로 나눈다
+  function tickColumn(cam: Camera, frame: RoadFrame): ScreenRect[] {
+    const rightY = cfg.outerEdges[0], h = ROAD_STEP_M * cam.s;
+    const rects: ScreenRect[] = [];
+    for (let s = cam.xAt(cam.H) - ROAD_STEP_M; s <= cam.xAt(0) + ROAD_STEP_M; s += ROAD_STEP_M) {
+      const p = project(cam, frame.pt(s, rightY));
+      rects.push({ x: p.X + 2, y: p.Y - h / 2, w: TICK_COL_W, h });
+    }
+    return rects;
+  }
+
+  function drawVehicle(cam: Camera, frame: RoadFrame, v: VehicleView, color: string, label: string, blinkOn: boolean, hit = false): void {
     const c = ctx!;
     const pts = vehicleCorners(v).map(p => project(cam, p)) as Quad<ScreenPt>;
     tracePolygon(c, pts);
@@ -258,8 +270,8 @@ export function createRoadView(canvas: HTMLCanvasElement, cfg: ConfigView) {
     c.textBaseline = 'middle';
     const text = `${label} ${kmh(v.v)} km/h`;
     const tw = c.measureText(text).width;
-    const ticks: ScreenRect = { x: cam.sx(cfg.outerEdges[0]) + 2, y: 0, w: 70, h: cam.H }; // drawRoadSurface 의 거리 눈금 열
-    const blocked = (x: number, y: number) => hitsAny([...avoid, ticks], x - 4, y - 11, tw + 8, 22);
+    const keepOut = [...avoid, ...tickColumn(cam, frame)];
+    const blocked = (x: number, y: number) => hitsAny(keepOut, x - 4, y - 11, tw + 8, 22);
     let x0 = cam.sx(v.y) - cam.s * 1.6 - tw;
     if (blocked(x0, ly)) x0 = cam.sx(v.y) + cam.s * 1.6;
     if (blocked(x0, ly)) { x0 = cam.sx(v.y) - tw / 2; ly = cam.sy(v.x) + (v.len / 2) * cam.s + 16; }
@@ -371,9 +383,9 @@ export function createRoadView(canvas: HTMLCanvasElement, cfg: ConfigView) {
 
     drawNmpcPlan(cam, frame, scene.view);
     const nbOff = offscreenInfo(cam, nb);
-    if (!nbOff) drawVehicle(cam, nb, COLOR.nb, '이웃', blinkOn);
+    if (!nbOff) drawVehicle(cam, frame, nb, COLOR.nb, '이웃', blinkOn);
     const egoOff = offscreenInfo(cam, ego);
-    if (!egoOff) drawVehicle(cam, ego, COLOR.ego, '자차', blinkOn, ec.hit);
+    if (!egoOff) drawVehicle(cam, frame, ego, COLOR.ego, '자차', blinkOn, ec.hit);
 
     drawRoadInfo(cam, scene.road);
     drawAlarmBorders(cam, scene.view.model);

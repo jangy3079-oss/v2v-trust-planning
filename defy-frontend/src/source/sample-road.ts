@@ -2,7 +2,7 @@
  * 샘플 모드 도로 (고정) — 90초 샘플(약 2.2km) 동안 직진·우·좌가 번갈아 나오도록 고른 화면 확인용 도로.
  * 샘플 타임라인의 차량 값은 도로와 무관하게 만든 값이라, 곡선 때문에 생기는 이웃 밀림은 서버(목업) 모드에서만 보인다.
  */
-import type { RoadResponse } from '../road-geometry';
+import type { RoadResponse } from '../contracts';
 
 const LT = 40; // 완화곡선 길이 (목업 서버와 같은 값으로 고름)
 
