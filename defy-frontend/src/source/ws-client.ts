@@ -392,7 +392,8 @@ export function createServerSource(base: string, sink: ServerSink, opts: ServerS
     },
 
     // 계약 외: 굽은 도로 곡률 구간 (GET /sessions/{id}/road). 이 경로가 없는 서버면 null → 직선 도로
-    // 없는 경로 응답: 목업 이전 서버는 404, 실제 15c 서버(real/server.ts)는 400 INVALID_ARGUMENT("경로 없음")
+    // 없는 경로 응답: 우리 서버(real/server.ts, mock/server.ts)는 400 INVALID_ARGUMENT("경로 없음")
+    // 404 분기는 방어용 — 404를 주는 서버는 확인하지 못했다
     async fetchRoad(): Promise<RoadResponse | null> {
       if (!sessionId || !token) return null;
       const res = await fetch(`${base}/sessions/${sessionId}/road`, { headers: auth(), cache: 'no-store' });
