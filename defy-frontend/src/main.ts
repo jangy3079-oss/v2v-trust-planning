@@ -8,7 +8,7 @@ import '@fontsource/barlow-semi-condensed/600.css';
 import './styles.css';
 import type { ClientMessage, DemoConfig, DemoEvent, Snapshot } from './contracts';
 import { createSessionBody, readConfig, readEvent, readSnapshot, snapshotOrder, type EventView, type SnapshotView } from './contract-access';
-import { AUTO_START_LEVEL, DATA_SOURCE, FORCE_MANUAL, SERVER_BASE_URL } from './config';
+import { AUTO_START_LEVEL, DATA_SOURCE, DEV_TOOLS, FORCE_MANUAL, SERVER_BASE_URL } from './config';
 import { SAMPLE_DEMO_CONFIG, STATIC_FRAMES } from './source/fixtures';
 import { createSamplePlayer } from './source/sample-player';
 import { createServerSource, fetchAutoDriveAvailable, fetchDemoConfig, type LinkState, type SnapshotKind } from './source/ws-client';
@@ -41,8 +41,8 @@ const STALE_MS = 250;    // 명세 4.2
 const LOG_LINES = 80;
 const PING_MS = 1000;    // 명세 6.2: ping 1초 주기
 
-// 주소 해시 옵션: #debug (디버그 창 표시), frame=<id> (정적 확인 프레임). 예: #debug&frame=nmpc
-const hashOpts = new Set(location.hash.replace(/^#/, '').split('&').filter(Boolean));
+// 주소 해시 옵션: #debug (디버그 창 표시), frame=<id> (정적 확인 프레임). 예: #debug&frame=nmpc. 개발 모드에서만 (시연 빌드는 무시)
+const hashOpts = new Set(DEV_TOOLS ? location.hash.replace(/^#/, '').split('&').filter(Boolean) : []);
 const DEBUG = hashOpts.has('debug');
 const hashFrame = [...hashOpts].find(o => o.startsWith('frame='))?.slice('frame='.length) ?? '';
 
@@ -387,6 +387,7 @@ function boot(demoConfig: DemoConfig): void {
   initTabs();
   initProvenanceJson();
   el('debug').hidden = !DEBUG;
+  el('testBar').hidden = !DEV_TOOLS; // "테스트" 드롭다운은 개발 모드에서만
   // 서버 모드 시험 도구 (#debug): 연결 끊기·ack 유실·입력 멈춤
   el('dbgServer').hidden = !serverSource;
   if (serverSource) {

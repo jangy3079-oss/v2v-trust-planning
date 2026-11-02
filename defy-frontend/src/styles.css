@@ -52,6 +52,7 @@ button { font-family: var(--font-ui); }
 }
 #banner .info { color: #9AA6AE; }
 #testBar { margin-left: auto; display: flex; align-items: center; gap: 6px; position: relative; z-index: 60; } /* 안내 마스크 위 (개발용) */
+#testBar[hidden] { display: none; }
 #testBar .test-label { font-size: 12px; color: #9AA6AE; }
 #testBar select {
   background: #24313D; color: #E6EAED; border: 1px solid #3B4A57; border-radius: 3px; padding: 1px 4px;

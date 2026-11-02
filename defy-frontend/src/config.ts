@@ -15,3 +15,6 @@ export const AUTO_START_LEVEL: AutoDriveLevel = 'high';
 // 개발·비교용 숨은 경로: ?mode=manual 이면 자동을 지원하는 서버에서도 직접 조종 세션({} 요청)을 만든다 (화면에는 노출하지 않음)
 export const FORCE_MANUAL = new URLSearchParams(location.search).get('mode') === 'manual';
 
+// 개발용 도구("테스트" 드롭다운, #debug 창, #frame= 정적 프레임)는 개발 모드(npm run dev)에서만. 시연 빌드(npm run build)에서는 숨기고 해시도 무시한다
+export const DEV_TOOLS = import.meta.env.DEV;
+
