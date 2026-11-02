@@ -13,6 +13,8 @@ import { SAMPLE_DEMO_CONFIG, STATIC_FRAMES } from './source/fixtures';
 import { createSamplePlayer } from './source/sample-player';
 import { createServerSource, fetchAutoDriveAvailable, fetchDemoConfig, type LinkState, type SnapshotKind } from './source/ws-client';
 import { createRoadView } from './view/road';
+import { createRoad, STRAIGHT_ROAD, type Road } from './road-geometry';
+import { SAMPLE_ROAD } from './source/sample-road';
 import { createChartHistory, createChartView } from './view/chart';
 import { createPanel } from './view/panel';
 import { createKeysView } from './view/keys';
@@ -45,6 +47,10 @@ const PING_MS = 1000;    // 명세 6.2: ping 1초 주기
 const hashOpts = new Set(DEV_TOOLS ? location.hash.replace(/^#/, '').split('&').filter(Boolean) : []);
 const DEBUG = hashOpts.has('debug');
 const hashFrame = [...hashOpts].find(o => o.startsWith('frame='))?.slice('frame='.length) ?? '';
+// ?road=straight: 굽은 도로를 끄고 직선으로 (계약 원래 모양)
+const ROAD_STRAIGHT = new URLSearchParams(location.search).get('road') === 'straight';
+const ROAD_REFETCH_MARGIN_M = 1500; // 받은 도로 끝까지 이만큼 남으면 다음 구간을 받는다
+const ROAD_RETRY_MS = 2000;
 
 const connUi = createConnectionOverlay();
 const errorUi = createErrorUi();
@@ -115,6 +121,7 @@ function boot(demoConfig: DemoConfig): void {
     const older = !!cur && (o.generation < cur.generation || (o.generation === cur.generation && o.frameSeq <= cur.frameSeq));
     if (!older) {
       const view = readSnapshot(snap);
+      syncRoad(view);
       // 자동을 요청했는데 서버가 auto 없이 수동 세션을 만들었다 (명세 5.1): 첫 표본에서 한 번 알린다
       if (state.autoRequested) { state.autoRequested = false; if (!view.auto) errorUi.toast(AUTO_TEXT.unsupported, 6000); }
       if (buffer.push(view, now)) history.clear(); // 새 generation: 이전 그래프 비움
@@ -124,6 +131,29 @@ function boot(demoConfig: DemoConfig): void {
     }
     if (cur && o.generation < cur.generation) return; // 과거 세대 이벤트 무시
     mergeEvents(o.generation, events);
+  }
+
+  // 굽은 도로 (계약 외): 샘플은 고정 도로, 서버는 generation 마다 GET /road. 받기 전·실패·404 면 직선
+  const roadState = {
+    road: (ROAD_STRAIGHT || server ? STRAIGHT_ROAD : createRoad(SAMPLE_ROAD)) as Road,
+    generation: null as number | null,
+    loading: false,
+    retryAt: 0,
+  };
+  function syncRoad(view: SnapshotView): void {
+    if (!server || ROAD_STRAIGHT || roadState.loading || performance.now() < roadState.retryAt || !serverSource) return;
+    const stale = view.generation !== roadState.generation;
+    if (!stale && Math.max(view.ego.x, view.nb.x) < roadState.road.coveredUntil - ROAD_REFETCH_MARGIN_M) return;
+    roadState.loading = true;
+    serverSource.fetchRoad()
+      .then(r => {
+        if (!r) { roadState.road = STRAIGHT_ROAD; roadState.generation = view.generation; return; } // 도로 확장이 없는 서버
+        if (r.generation !== state.latest?.generation) return; // 그사이 리셋 → 다음 표본에서 다시
+        roadState.road = createRoad(r);
+        roadState.generation = r.generation;
+      })
+      .catch(e => { console.warn('[road] GET /road 실패 — 잠시 뒤 다시', e); roadState.retryAt = performance.now() + ROAD_RETRY_MS; })
+      .finally(() => { roadState.loading = false; });
   }
 
   // 이벤트 합치기: generation 별, event_seq 로 중복 제거·정렬 (telemetry 와 GET /events 공통). 반환: 새로 합친 수
@@ -320,7 +350,7 @@ function boot(demoConfig: DemoConfig): void {
     }
     tutorial.update(state.mode !== 'static' && (state.mode !== 'server' || linkOpen()) ? state.latest : null);
     if (d) {
-      road.render({ ego: d.ego, nb: d.nb, simTime: d.simTime, view: d.current, showHud: state.showHud, avoid: [dockRect()] });
+      road.render({ ego: d.ego, nb: d.nb, simTime: d.simTime, view: d.current, showHud: state.showHud, avoid: [dockRect()], road: roadState.road });
 
       const last = buffer.lastReceivedMs();
       const stale = state.mode !== 'static' && d.current.phase === 'running' && last != null && now - last > STALE_MS;
