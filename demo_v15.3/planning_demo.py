@@ -73,6 +73,10 @@ class DemoStateMachine(OvertakeStateMachine):
         p0=math.tan(th);q0=float(curvature)*(1+p0*p0)**1.5;d=target-y0
         v=max(float(ego[3]) if v_design is None else v_design,1.)
         S=max(s_min,(60*abs(d)*v*v/(ETA*RAMP))**(1/3))
+        # a_lat at s=0 (=|q0|·v²) can't be lowered by a longer S; if the current curvature comes from a slower manoeuvre it exceeds
+        # the bound, the loop never breaks and the quintic degenerates (road departure). Start from the largest curvature allowed at v.
+        q_max=ETA*LAT_NORMAL/(v*v)
+        if abs(q0)>q_max:q0=math.copysign(q_max,q0)
         for _ in range(60):
             c=_quintic(y0,p0,q0,target,S)
             s=np.linspace(0,S,200)

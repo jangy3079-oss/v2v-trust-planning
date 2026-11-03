@@ -6,13 +6,13 @@
  */
 import type { SnapshotView } from '../contract-access';
 import { LABEL } from '../view/format';
-import { PAUSE_COMMON, PAUSE_TEXT } from './text-ko';
+import { BUTTON, LINK_DOWN_TEXT, PAUSE_COMMON, PAUSE_TEXT } from './text-ko';
 
-// 화면 쪽 연결 상태 (샘플 모드는 none)
+// 화면 쪽 연결 상태 (샘플 모드는 none). down 의 hint: waiting 복구 대기 · serverDown 재연결이 오래 실패 · failed 세션 종료(오류 카드)
 export type LinkPhase =
   | { kind: 'none' }
   | { kind: 'open'; recovered: boolean }
-  | { kind: 'down'; text: string }
+  | { kind: 'down'; text: string; hint: 'waiting' | 'serverDown' | 'failed' }
   | { kind: 'recovering'; text: string };
 
 export function createPauseOverlay(host: HTMLElement, onResume: () => void) {
@@ -24,6 +24,7 @@ export function createPauseOverlay(host: HTMLElement, onResume: () => void) {
     <div class="pause-reason"></div>
     <div class="pause-note"></div>
     <button type="button" class="pause-resume">재개</button>
+    <button type="button" class="pause-resume pause-reload" hidden></button>
   </div>`;
   host.appendChild(el);
   const titleEl = el.querySelector<HTMLElement>('.pause-title')!;
@@ -31,6 +32,10 @@ export function createPauseOverlay(host: HTMLElement, onResume: () => void) {
   const noteEl = el.querySelector<HTMLElement>('.pause-note')!;
   const btn = el.querySelector<HTMLButtonElement>('.pause-resume')!;
   btn.addEventListener('click', () => { if (!btn.disabled) onResume(); });
+  // 서버가 오래 응답하지 않을 때만: 서버를 다시 켠 뒤 새 세션으로 (같은 세션은 다시 켠 서버에 없다)
+  const reloadBtn = el.querySelector<HTMLButtonElement>('.pause-reload')!;
+  reloadBtn.textContent = BUTTON.reload;
+  reloadBtn.addEventListener('click', () => location.reload());
 
   return {
     render(v: SnapshotView | null, link: LinkPhase): void {
@@ -38,11 +43,14 @@ export function createPauseOverlay(host: HTMLElement, onResume: () => void) {
         el.hidden = false;
         titleEl.textContent = link.kind === 'down' ? '연결이 끊어졌습니다' : '연결 복구 중';
         reasonEl.textContent = link.text;
-        noteEl.textContent = '입력은 비워졌습니다. 복구되면 아래 [재개] 버튼이 활성화됩니다 (자동으로 재개하지 않음).';
+        const hint = link.kind === 'down' ? link.hint : 'waiting';
+        noteEl.textContent = LINK_DOWN_TEXT[hint];
         btn.textContent = '재개';
         btn.disabled = true;
+        reloadBtn.hidden = hint !== 'serverDown';
         return;
       }
+      reloadBtn.hidden = true;
       const paused = !!v && v.phase === 'paused';
       el.hidden = !paused;
       if (!paused || !v) return;

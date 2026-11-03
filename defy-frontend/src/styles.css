@@ -50,6 +50,10 @@ button { font-family: var(--font-ui); }
 #banner .sample {
   color: #FFD3E2; font-weight: 700; padding: 0 8px; border: 1.5px solid #E2709B; border-radius: 3px; letter-spacing: .01em;
 }
+/* 실제 15c 서버: 경고가 아닌 표시 (데이터 근거 탭의 서버 표시와 같은 초록) */
+#banner .server {
+  color: #CDEBD9; font-weight: 700; padding: 0 8px; border: 1.5px solid #7CC29C; border-radius: 3px; letter-spacing: .01em;
+}
 #banner .info { color: #9AA6AE; }
 #banner .road-pick { margin-left: 12px; font-size: 12px; color: #9AA6AE; }
 #banner .road-pick select { margin-left: 4px; }
@@ -320,6 +324,7 @@ ul.log li.empty { color: var(--muted); }
 }
 .pause-resume:hover:not(:disabled) { background: #F6CD4E; }
 .pause-resume:disabled { opacity: .45; cursor: default; box-shadow: none; }
+.pause-reload { margin-left: 8px; }
 
 /* 1001~1150px: 값 줄바꿈이 늘어나는 탭만 높이를 늘린다 */
 @media (min-width: 1001px) and (max-width: 1150px) {
