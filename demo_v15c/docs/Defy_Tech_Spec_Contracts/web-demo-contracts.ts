@@ -145,7 +145,9 @@ export interface DemoConfig {
 // that seeds only the virtual driver. 1.5: auto_seed omitted → the server picks one and reports it in Snapshot.auto.seed;
 // auto_level (default "normal") sets the event interval. The Idempotency-Key body comparison uses auto_drive/auto_seed/
 // auto_level exactly as sent (omitted stays omitted); solver keeps its default-filled comparison.
-export interface CreateSessionRequest { solver?: Solver; auto_drive?: boolean; auto_seed?: number; auto_level?: AutoDriveLevel }
+/** 1.8: 표시용 도로 종류. straight = 직선, random = 세대마다 무작위 굽은 도로, circular = 일정 반경 원형 도로. 시뮬레이션 물리는 어느 것이든 직선 */
+export type RoadKind = "straight" | "random" | "circular";
+export interface CreateSessionRequest { solver?: Solver; auto_drive?: boolean; auto_seed?: number; auto_level?: AutoDriveLevel; road?: RoadKind }
 export interface CreateSessionResponse {
   protocol_version: ProtocolVersion;
   session_id: string;

@@ -1,0 +1,12 @@
+{
+  "_comment": "합성·직선·시뮬레이션. 고정 대표 brake25 seed0. 추종/복귀 실패도 재현하는 검증용 입력.",
+  "seed": 0,
+  "sigma_meas": 0.1,
+  "signal_assumption": true,
+  "bg": false,
+  "backend": "combined",
+  "solver": "rule",
+  "duration": 60.0,
+  "init": {"gap": 25.0, "lane": 1, "v0": 25.0, "v_ego": 25.0},
+  "events": [{"t": 20.0, "key": "4"}]
+}

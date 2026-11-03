@@ -9,7 +9,8 @@ import traceback
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-V15C = Path(os.environ.get("DEFY_V15C", HERE.parent.parent / "demo_v15c")).resolve()
+_ROOT = HERE.parent.parent
+V15C = Path(os.environ.get("DEFY_V15C", _ROOT / "demo_v15.3" if (_ROOT / "demo_v15.3").is_dir() else _ROOT / "demo_v15c")).resolve()   # 15.3 (정지 차량 우회) 가 있으면 그것을 쓴다
 sys.path.insert(0, str(V15C))
 if (V15C.parent / "src").is_dir():  # 저장소 배치: v2v_trust_planning 패키지는 <저장소>/src 에 있다
     sys.path.insert(1, str(V15C.parent / "src"))

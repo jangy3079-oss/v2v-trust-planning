@@ -51,6 +51,8 @@ button { font-family: var(--font-ui); }
   color: #FFD3E2; font-weight: 700; padding: 0 8px; border: 1.5px solid #E2709B; border-radius: 3px; letter-spacing: .01em;
 }
 #banner .info { color: #9AA6AE; }
+#banner .road-pick { margin-left: 12px; font-size: 12px; color: #9AA6AE; }
+#banner .road-pick select { margin-left: 4px; }
 #testBar { margin-left: auto; display: flex; align-items: center; gap: 6px; position: relative; z-index: 60; } /* 안내 마스크 위 (개발용) */
 #testBar[hidden] { display: none; }
 #testBar .test-label { font-size: 12px; color: #9AA6AE; }

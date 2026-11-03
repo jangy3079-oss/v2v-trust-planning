@@ -1,0 +1,23 @@
+{
+ "_comment": "demo_v15c 시연 (합성 환경, 직선 도로, 시뮬레이션, 신호 = 가정). 이웃 왼쪽 차로 40 m 앞. t=20 급제동(접근 → 감속, 정지하지 않아야 함) → t=70 급가속(멀어짐). 자차 rule.",
+ "seed": 0,
+ "sigma_meas": 0.1,
+ "signal_assumption": true,
+ "backend": "rule",
+ "duration": 110.0,
+ "init": {
+  "gap": 40.0,
+  "lane": 2,
+  "v0": 25.0
+ },
+ "events": [
+  {
+   "t": 20.0,
+   "key": "4"
+  },
+  {
+   "t": 70.0,
+   "key": "5"
+  }
+ ]
+}

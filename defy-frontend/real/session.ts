@@ -6,11 +6,11 @@
  */
 import type {
   ApiError, AutoDriveLevel, AutoDriveStatus, AutoStopReason, CommandBody, DemoEvent, DriveKey, ErrorCode, EventKind, GraphSample,
-  PauseReason, Phase, RoadResponse, ScenarioKind, ScenarioReport, Snapshot, Solver, TutorialStep,
+  PauseReason, Phase, RoadKind, RoadResponse, ScenarioKind, ScenarioReport, Snapshot, Solver, TutorialStep,
 } from '../src/contracts.ts';
 import { MOCK_DEMO_CONFIG as CFG, REAL_ROAD } from './config.ts';
 import { callBridge } from './bridge-sync.ts';
-import { createRoadGenerator, roadSeedFor } from '../shared/road.ts';
+import { createRoadGenerator, roadModeFor, roadSeedFor } from '../shared/road.ts';
 
 export const DT = 0.1;
 const LAST_STEP = (CFG.tutorial.length - 1) as TutorialStep;
@@ -36,7 +36,7 @@ type Parts = Pick<Snapshot, 'vehicles' | 'observation' | 'model' | 'ego_control'
 // 자동 모드 (명세 1.3). null = 수동 세션: 아래 자동 분기는 모두 건너뛴다
 export interface AutoOptions { seed: number; level: AutoDriveLevel }
 
-export function createSession(id: string, token: string, solver: Solver, auto: AutoOptions | null = null) {
+export function createSession(id: string, token: string, solver: Solver, auto: AutoOptions | null = null, roadKind?: RoadKind) {
   let generation = 0, frameSeq = 0, tick = -1;
   let phase: Phase = 'tutorial';
   let tutorialStep: TutorialStep | null = 0;
@@ -85,9 +85,10 @@ export function createSession(id: string, token: string, solver: Solver, auto: A
     P = created ? callBridge<Parts>({ cmd: 'reset' })
       : callBridge<Parts>(auto ? { cmd: 'new', solver, auto: { ...auto, session_id: id } } : { cmd: 'new', solver });
     created = true;
-    const roadSeed = roadSeedFor(REAL_ROAD);
-    road = createRoadGenerator(roadSeed);
-    console.log(`[real] road ${id} generation=${generation} seed=${roadSeed ?? 'straight'}`); // 재현용 (자동 seed 와 별개)
+    const mode = roadModeFor(roadKind, REAL_ROAD);
+    const roadSeed = mode === 'straight' ? null : mode === 'circular' ? 0 : roadSeedFor(/^\d+$/.test(REAL_ROAD) ? REAL_ROAD : 'random');
+    road = createRoadGenerator(roadSeed, mode === 'circular');
+    console.log(`[real] road ${id} generation=${generation} mode=${mode} seed=${roadSeed ?? 'straight'}`); // 재현용 (자동 seed 와 별개)
     if (auto) { autoOn = true; takeover = null; idleTicks = 0; idleLimit = Math.round(P.auto_idle_s! / DT); } // R: 같은 설정·같은 시드로 처음부터
     prev = { det: false, eff: false, collisions: 0, scenStart: null, scenKind: null, signal: 'off' };
     events = []; eventSeq = 0; undrained = []; graph = [];

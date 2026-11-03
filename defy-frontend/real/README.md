@@ -10,7 +10,7 @@ npm run real   # python3 가 numpy·torch·scipy(·casadi) 있는 파이썬이 �
 npm run dev      # http://localhost:5173/?source=server
 ```
 - Python 에 numpy, torch, scipy 필요 (nmpc 를 쓰려면 casadi). 프로젝트 .venv 에 numpy 가 없으면 "python 브리지가 종료되었습니다" 로 멈추므로 DEFY_PYTHON 으로 패키지가 있는 파이썬을 지정한다.
-- 환경변수: DEFY_PYTHON, DEFY_V15C(기본 ../demo_v15c), DEFY_BRIDGE_TIMEOUT_MS(60000), MOCK_PORT(8787), REAL_ROAD(straight = 직선, 숫자 = 도로 seed 고정, 없음 = 세대마다 무작위)
+- 환경변수: DEFY_PYTHON, DEFY_V15C(기본 ../demo_v15.3, 없으면 ../demo_v15c), DEFY_BRIDGE_TIMEOUT_MS(60000), MOCK_PORT(8787), REAL_ROAD(기본 도로: straight = 직선, circular = 원형, 숫자 = 도로 seed 고정, 없음 = 세대마다 무작위. 화면의 도로 선택이 세션 생성 body 의 road 로 우선한다)
 - 도로: `GET /sessions/{id}/road` 는 `shared/road.ts` 로 세대마다 만든 표시용 곡선. 브리지(15c)에는 넘기지 않는다. 도로 seed 는 서버 콘솔 `[real] road <세션> generation=<n> seed=<seed>` 에 남는다 (자동 seed 와 별개)
 
 ## 구성

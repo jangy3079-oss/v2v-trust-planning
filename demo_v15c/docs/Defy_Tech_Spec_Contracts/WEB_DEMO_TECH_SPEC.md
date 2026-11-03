@@ -27,6 +27,10 @@
 | 방향지시등 | `cut_in`은 항상 깜빡이 | `cut_in`에서만 단계별 확률(low 100% / normal 70% / high 30%) |
 | `AutoDriveStatus` | — | `level_setting`, `level`, `state="manual"`, `stopped_reason?` 추가 |
 
+### 변경 요약 (v1.7 → v1.8)
+
+`CreateSessionRequest` 에 선택 필드 `road?: "straight" | "random" | "circular"` 를 추가했다 (하위 호환, `protocol_version` 그대로). 생략하면 서버 기본값(`REAL_ROAD`). 도로는 `GET /sessions/{id}/road` 로 내려가는 **표시용**이며 시뮬레이션 물리는 직선 그대로다. `circular` 는 반경 300 m 의 일정 곡률 원형 도로(표시 전용). 멱등 비교 본문에 `road` 가 포함된다.
+
 ### 변경 요약 (v1.3 → v1.4)
 
 웹 어댑터에 **자동 모드(가상 운전자)** 를 추가했다. 15c 알고리즘(`demo_v15c`의 시뮬레이션·탐지·누적·자차 회피)은 바뀌지 않는다. 계약은 **하위 호환 추가만** 했고 `protocol_version`은 `v1` 그대로다. 자동 모드를 켜지 않은 세션의 동작은 v1.3과 같다. 동작 규칙은 1.3절.

@@ -35,6 +35,7 @@ import type {
   AutoDriveStatus,
   AutoStopReason,
   CreateSessionRequest,
+  RoadKind,
   HealthResponse,
 } from './contracts';
 
@@ -241,9 +242,10 @@ export function readHealth(h: HealthResponse): { ready: boolean; autoDriveAvaila
 }
 
 // POST /sessions 본문. 직접 조종 + rule 이면 기존과 같은 {} (생략 = 서버 기본값)
-export interface SessionOptions { solver: Solver; auto: { level: AutoDriveLevel; seed: number | null } | null }
+export interface SessionOptions { solver: Solver; auto: { level: AutoDriveLevel; seed: number | null } | null; road?: RoadKind }
 export function createSessionBody(o: SessionOptions): CreateSessionRequest {
   const body: CreateSessionRequest = {};
+  if (o.road) body.road = o.road;
   if (o.solver !== 'rule') body.solver = o.solver;
   if (o.auto) {
     body.auto_drive = true;

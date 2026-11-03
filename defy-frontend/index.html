@@ -9,6 +9,13 @@
   <header id="banner">
     <span id="bannerTitle" class="sample">샘플 데이터 — 실제 15c 출력 아님</span>
     <span id="bannerInfo" class="info" tabindex="0">ⓘ</span>
+    <label class="road-pick">도로
+      <select id="roadSelect" title="도로 종류 — 바꾸면 새 세션으로 다시 시작합니다 (원형은 표시 전용, 물리는 직선)">
+        <option value="random">랜덤</option>
+        <option value="straight">직선</option>
+        <option value="circular">원형</option>
+      </select>
+    </label>
     <!-- 테스트 막대 (항상 보임): 샘플 재생 / 정적 확인 프레임 선택 -->
     <div id="testBar">
       <span class="test-label">테스트</span>

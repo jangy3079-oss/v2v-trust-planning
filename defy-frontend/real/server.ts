@@ -15,7 +15,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { randomInt, randomUUID } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import type {
-  AckMessage, ApiError, AutoDriveLevel, CommandAction, CommandBody, CreateSessionResponse, DriveKey, ErrorCode, ErrorMessage, ErrorResponse,
+  AckMessage, ApiError, AutoDriveLevel, RoadKind, CommandAction, CommandBody, CreateSessionResponse, DriveKey, ErrorCode, ErrorMessage, ErrorResponse,
   EventsResponse, HealthResponse, HistoryResponse, PongMessage, ReadyMessage, Solver, TelemetryMessage,
 } from '../src/contracts.ts';
 import { MOCK_DEMO_CONFIG } from './config.ts';
@@ -127,7 +127,7 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
     let body: unknown;
     try { body = await readJson(req); } catch { return sendError(res, apiError('INVALID_ARGUMENT', 'JSON 본문이 아닙니다')); }
     if (typeof body !== 'object' || body === null || Array.isArray(body)) return sendError(res, apiError('INVALID_ARGUMENT', '본문은 객체여야 합니다'));
-    const extra = Object.keys(body).filter(k => !['solver', 'auto_drive', 'auto_seed', 'auto_level'].includes(k));
+    const extra = Object.keys(body).filter(k => !['solver', 'auto_drive', 'auto_seed', 'auto_level', 'road'].includes(k));
     if (extra.length) return sendError(res, apiError('INVALID_ARGUMENT', `정의되지 않은 필드: ${extra.join(', ')}`, { field: extra[0]! }));
     const solverRaw = (body as { solver?: unknown }).solver ?? 'rule';
     if (solverRaw !== 'rule' && solverRaw !== 'nmpc') return sendError(res, apiError('INVALID_ARGUMENT', 'solver 는 rule 또는 nmpc', { field: 'solver' }));
@@ -137,7 +137,9 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
     if (ad !== undefined && typeof ad !== 'boolean') return sendError(res, apiError('INVALID_ARGUMENT', 'auto_drive 는 boolean', { field: 'auto_drive' }));
     if (as !== undefined && !(typeof as === 'number' && Number.isSafeInteger(as) && as >= 0)) return sendError(res, apiError('INVALID_ARGUMENT', 'auto_seed 는 0 이상 안전 정수', { field: 'auto_seed' }));
     if (al !== undefined && !['low', 'normal', 'high', 'random'].includes(al as string)) return sendError(res, apiError('INVALID_ARGUMENT', 'auto_level 은 low/normal/high/random', { field: 'auto_level' }));
-    const bodyKey = JSON.stringify({ solver, auto_drive: ad, auto_seed: as, auto_level: al });
+    const roadRaw = (body as { road?: unknown }).road;
+    if (roadRaw !== undefined && roadRaw !== 'straight' && roadRaw !== 'random' && roadRaw !== 'circular') return sendError(res, apiError('INVALID_ARGUMENT', 'road 는 straight/random/circular', { field: 'road' }));
+    const bodyKey = JSON.stringify({ solver, auto_drive: ad, auto_seed: as, auto_level: al, road: roadRaw });
     const cached = idempotency.get(key);
     if (cached && Date.now() - cached.at < IDEMPOTENCY_TTL_MS) {
       if (cached.bodyKey !== bodyKey) return sendError(res, apiError('IDEMPOTENCY_CONFLICT', '같은 Idempotency-Key 에 다른 본문'));
@@ -147,7 +149,7 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
     const id = `real_${randomUUID().slice(0, 8)}`;
     // 시드 생략 → 서버가 정해 세션에 저장 (R 뒤에도 같은 시드, Snapshot.auto.seed 로 알림)
     const auto: AutoOptions | null = ad === true ? { seed: (as as number | undefined) ?? randomInt(0, 2 ** 31 - 1), level: (al as AutoDriveLevel | undefined) ?? 'normal' } : null;
-    const s = createSession(id, randomUUID(), solver, auto);
+    const s = createSession(id, randomUUID(), solver, auto, roadRaw as RoadKind | undefined);
     sessions.set(id, { s, conn: null, requests: new Map(), pending: [], due: 0, lastInputAt: 0, disconnectedAt: performance.now(), expired: false });
     const payload: CreateSessionResponse = {
       protocol_version: 'v1', session_id: id, session_token: s.token, ws_path: `${BASE}/sessions/${id}/stream`,

@@ -31,11 +31,16 @@ function rng(seed: number): () => number {
 }
 
 // 도로 종류 환경변수 (MOCK_ROAD·REAL_ROAD): straight = 직선(null), 숫자 = 고정 seed, 그 밖(없음 포함) = 세대마다 무작위
+export const CIRCULAR_RADIUS_M = 300;
+export type RoadMode = 'straight' | 'random' | 'circular';
+export const roadModeFor = (kind: string | undefined, env: string): RoadMode =>
+  kind === 'straight' || kind === 'random' || kind === 'circular' ? kind : env === 'straight' ? 'straight' : env === 'circular' ? 'circular' : 'random';
+
 export const roadSeedFor = (mode: string): number | null =>
   mode === 'straight' ? null : /^\d+$/.test(mode) ? Number(mode) : Math.floor(Math.random() * 2 ** 31);
 
 // seed=null → 직선 도로
-export function createRoadGenerator(seed: number | null) {
+export function createRoadGenerator(seed: number | null, circular = false) {
   const pieces: Piece[] = [];
   const turns: RoadTurnInfo[] = [];
   let end = seed == null ? Infinity : ROAD_PARAMS.startStraightM;
@@ -43,6 +48,12 @@ export function createRoadGenerator(seed: number | null) {
   const between = ([lo, hi]: readonly [number, number]) => lo + (hi - lo) * rand();
 
   function addSection(): void {
+    if (circular) { // 시작 직선 뒤 완화곡선 + 일정 반경 원호 (끝없이 이어짐)
+      const Lt = ROAD_PARAMS.transitionM, k = 1 / CIRCULAR_RADIUS_M, s1 = end + Lt, s2 = s1 + 2 * Math.PI * CIRCULAR_RADIUS_M * 4;
+      pieces.push({ s0_m: r4(end), s1_m: r4(s1), k0_1pm: 0, k1_1pm: k }, { s0_m: r4(s1), s1_m: r4(s2), k0_1pm: k, k1_1pm: k });
+      turns.push({ turn: 'left', start_s_m: r4(end), end_s_m: r4(s2), radius_m: CIRCULAR_RADIUS_M, angle_deg: 1440 });
+      end = s2; return;
+    }
     const s0 = end + between(ROAD_PARAMS.leadStraightM);
     const pick = rand();
     if (pick < 1 / 3) { end = s0; return; } // 직진: 직선만 (다음 구간과 이어져 더 긴 직선)

@@ -14,6 +14,8 @@ import { createSamplePlayer } from './source/sample-player';
 import { createServerSource, fetchAutoDriveAvailable, fetchDemoConfig, type LinkState, type SnapshotKind } from './source/ws-client';
 import { createRoadView } from './view/road';
 import { createRoad, STRAIGHT_ROAD, type Road } from './road-geometry';
+import { createRoadGenerator } from '../shared/road';
+import type { RoadKind } from './contracts';
 import { SAMPLE_ROAD } from './source/sample-road';
 import { createChartHistory, createChartView } from './view/chart';
 import { createPanel } from './view/panel';
@@ -48,7 +50,9 @@ const hashOpts = new Set(DEV_TOOLS ? location.hash.replace(/^#/, '').split('&').
 const DEBUG = hashOpts.has('debug');
 const hashFrame = [...hashOpts].find(o => o.startsWith('frame='))?.slice('frame='.length) ?? '';
 // ?road=straight: 굽은 도로를 끄고 직선으로 (계약 원래 모양)
-const ROAD_STRAIGHT = new URLSearchParams(location.search).get('road') === 'straight';
+const ROAD_PARAM = new URLSearchParams(location.search).get('road');
+const ROAD_KIND: RoadKind = ROAD_PARAM === 'straight' || ROAD_PARAM === 'circular' ? ROAD_PARAM : 'random';
+const ROAD_STRAIGHT = ROAD_KIND === 'straight';
 const ROAD_REFETCH_MARGIN_M = 1500; // 받은 도로 끝까지 이만큼 남으면 다음 구간을 받는다
 const ROAD_RETRY_MS = 2000;
 
@@ -135,7 +139,7 @@ function boot(demoConfig: DemoConfig): void {
 
   // 굽은 도로 (명세 5.2): 샘플은 고정 도로, 서버는 generation 마다 GET /road. 받기 전·실패·/road 없는 서버(400)면 직선
   const roadState = {
-    road: (ROAD_STRAIGHT || server ? STRAIGHT_ROAD : createRoad(SAMPLE_ROAD)) as Road,
+    road: (ROAD_STRAIGHT || server ? STRAIGHT_ROAD : createRoad(ROAD_KIND === 'circular' ? createRoadGenerator(0, true).response(0, 0) : SAMPLE_ROAD)) as Road,
     generation: null as number | null,
     loading: false,
     retryAt: 0,
@@ -396,6 +400,13 @@ function boot(demoConfig: DemoConfig): void {
   }
 
   // ---- 시작 ----
+  const roadSelect = el<HTMLSelectElement>('roadSelect');
+  roadSelect.value = ROAD_KIND;
+  roadSelect.addEventListener('change', () => { // 도로가 바뀌면 새 세션 (서버에 road 를 실어 다시 만든다)
+    const u = new URL(location.href);
+    u.searchParams.set('road', roadSelect.value);
+    location.href = u.toString();
+  });
   el('bannerTitle').textContent = server
     ? '서버 모드 — 연결된 서버의 값 (목업 서버는 실제 15c 아님)'
     : '샘플 데이터 — 실제 15c 출력 아님';
@@ -455,9 +466,9 @@ function boot(demoConfig: DemoConfig): void {
     provenance.setSource('server');
     // 자동 모드를 지원하는 서버면 바로 자동 세션 {auto_drive, auto_level}. 아니면(목업·health 실패) 또는 ?mode=manual 이면 기존처럼 {} 로 rule 세션
     void (async () => {
-      if (FORCE_MANUAL || !(await fetchAutoDriveAvailable(SERVER_BASE_URL))) return serverSource.start();
+      if (FORCE_MANUAL || !(await fetchAutoDriveAvailable(SERVER_BASE_URL))) return serverSource.start(createSessionBody({ solver: 'rule', auto: null, road: ROAD_KIND }));
       state.autoRequested = true;
-      return serverSource.start(createSessionBody({ solver: 'rule', auto: { level: AUTO_START_LEVEL, seed: null } }));
+      return serverSource.start(createSessionBody({ solver: 'rule', auto: { level: AUTO_START_LEVEL, seed: null }, road: ROAD_KIND }));
     })();
   } else {
     // 샘플 모드: 샘플 재생(기본) 또는 정적 확인 프레임
