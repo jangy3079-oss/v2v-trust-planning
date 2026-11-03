@@ -94,7 +94,7 @@ export const SAMPLE_DEMO_CONFIG: DemoConfig = {
     { step: 2, highlight_codes: ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5'], text: '1 드리프트 · 2 조향 고정 · 3 위빙 · 4 급제동 · 5 급가속을 실행합니다. 자차는 이웃차가 자기 진로에 들어올 때만 피합니다(시작 직후 약 10초는 준비 중).' },
     { step: 3, highlight_codes: ['KeyR'], text: 'R을 누르면 차량, 속도, 신뢰도, 그래프와 이 안내까지 처음으로 돌아갑니다.' },
   ],
-  banner: '합성 환경 · 직선 도로 · 시뮬레이션 · 방향지시등 신호 가정',
+  banner: '합성 환경 · 굽은 도로(표시용 고정) · 시뮬레이션 · 방향지시등 신호 가정',
 };
 
 // ---- Snapshot 조립 도우미 (가짜 서버 역할) ----

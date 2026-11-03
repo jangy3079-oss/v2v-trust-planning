@@ -3,3 +3,4 @@ dist
 
 .cloud_test_bundle*.tgz
 .src_snapshot.tgz
+real/logs/

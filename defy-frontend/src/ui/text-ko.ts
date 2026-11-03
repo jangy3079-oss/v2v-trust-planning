@@ -2,12 +2,13 @@
  * 사용자 화면 문구 (오류·정지·운전 잠금). 문구는 이 파일에서만 고친다.
  * 서버가 보낸 message·details 는 화면에 그대로 내보내지 않는다 (콘솔·디버그 로그에만). stack trace 노출 금지.
  */
-import type { ErrorCode, PauseReason } from '../contracts';
+import type { AutoDriveLevel, AutoDriveState, AutoStopReason, ErrorCode, PauseReason } from '../contracts';
 
 export interface ErrorText { title: string; body: string }
 
 // 사용자에게 보이는 오류 (명세 9). 조용히 처리하는 코드는 여기 없다 (source/error-policy.ts 참고)
-export const ERROR_TEXT: Partial<Record<ErrorCode | 'CONNECTION_FAILED', ErrorText>> = {
+// SERVER_RESTART_NEEDED: 서버 코드가 아니라 화면 판단 (R 직후 또는 10초 안에 3번 INTERNAL_ERROR, main.ts)
+export const ERROR_TEXT: Partial<Record<ErrorCode | 'CONNECTION_FAILED' | 'SERVER_RESTART_NEEDED', ErrorText>> = {
   UNAUTHENTICATED: { title: '세션 인증이 끝났습니다', body: '이 세션으로는 더 조작할 수 없습니다. 새 세션을 시작하면 안내부터 다시 시작합니다.' },
   FORBIDDEN: { title: '세션 인증이 끝났습니다', body: '이 세션으로는 더 조작할 수 없습니다. 새 세션을 시작하면 안내부터 다시 시작합니다.' },
   SESSION_NOT_FOUND: { title: '세션이 만료되었습니다', body: '서버에 이 세션이 없습니다. 새 세션을 시작하면 안내부터 다시 시작합니다.' },
@@ -18,9 +19,24 @@ export const ERROR_TEXT: Partial<Record<ErrorCode | 'CONNECTION_FAILED', ErrorTe
   MODEL_UNAVAILABLE: { title: '지금은 이 제어 방식을 쓸 수 없습니다', body: '서버의 모델이 준비되지 않았습니다.' },
   INTERNAL_ERROR: { title: '서버 오류입니다. R로 다시 시작하세요', body: '운전 입력은 막혀 있고 R(전체 초기화)만 받습니다.' },
   CONNECTION_FAILED: { title: '서버 연결 실패', body: '서버에 연결할 수 없습니다. 서버가 켜져 있는지 확인한 뒤 새 세션을 시작하세요.' },
+  SERVER_RESTART_NEEDED: { title: '서버를 다시 시작해야 합니다', body: 'python 브리지가 멈췄을 수 있습니다. npm run real 터미널을 다시 켠 뒤 [새 세션 시작]을 누르세요' },
 };
 
-export const BUTTON = { newSession: '새 세션 시작', retry: '다시 시도', close: '닫기' };
+export const BUTTON = { newSession: '새 세션 시작', retry: '다시 시도', close: '닫기', reload: '새로고침' };
+
+// 상단 배너 (서버 모드). 실제/목업은 서버 DemoConfig.banner 로 구분한다 (main.ts)
+export const BANNER_TEXT = {
+  real: '서버 모드 — 실제 15c (demo_v15c)',
+  other: '서버 모드 — 연결된 서버의 값 (목업 서버는 실제 15c 아님)',
+  unreachable: '서버 모드 — 서버에 연결하지 못함',
+};
+
+// 연결이 끊긴 동안 정지 오버레이 안내 (ui/pause.ts)
+export const LINK_DOWN_TEXT = {
+  waiting: '입력은 비워졌습니다. 복구되면 아래 [재개] 버튼이 활성화됩니다 (자동으로 재개하지 않음).',
+  serverDown: '서버가 응답하지 않습니다. 서버 터미널(npm run real)을 다시 켠 뒤 [새로고침]을 누르세요',
+  failed: '오류 카드의 버튼을 누르세요',
+};
 
 export const RATE_LIMIT_WAIT = (s: number) => `잠시 후 다시 시도해 주세요 — ${s}초 뒤 자동으로 다시 요청합니다`;
 
@@ -43,4 +59,45 @@ export const LOCK_TEXT = {
   paused: '정지 중 · [재개] 후 입력',
   completion: '누르고 있던 키를 떼면 운전 입력 시작',
   rateLimited: '전송 줄임 · 요청 과다',
+};
+
+// ---- 자동 모드 (명세 1.3, v1.5). 서버 auto.log 의 text 는 서버 문자열 그대로 표시한다 ----
+export const AUTO_LEVEL: Record<AutoDriveLevel, string> = { low: '낮음', normal: '보통', high: '높음', random: '무작위' };
+export const AUTO_STATE: Record<AutoDriveState, string> = {
+  cruise: '보통 주행 (첫 대기 전)', wait: '다음 이벤트 대기', event: '이벤트 중', recover: '회복 중', manual: '직접 조종으로 바뀜',
+};
+export const AUTO_STOP: Record<AutoStopReason, string> = { human_input: '사람 키 입력', human_command: '사람 명령(Q/E·1~5·0)' };
+// 데이터 근거 탭의 좁은 칸용 (전체 문구는 툴팁과 주행 화면 도크에)
+export const AUTO_STOP_SHORT: Record<AutoStopReason, string> = { human_input: '사람 키 입력', human_command: '사람 명령' };
+export const AUTO_CUT_IN = '차로 진입'; // event_kind 의 cut_in (나머지는 DemoConfig 시나리오 이름)
+
+export const AUTO_TEXT = {
+  status: '자동',
+  levelRandomNow: (now: string) => `무작위 · 지금 ${now}`,
+  nextIn: (s: number) => `다음 이벤트까지 ${s.toFixed(1)}초`,
+  manualBack: '키를 누르지 않으면 자동으로 돌아갑니다 · R은 처음부터', // 남은 초(auto_resume_in_s)가 없을 때만
+  manualResumeIn: (s: number) => `${s.toFixed(1)}초 뒤 자동 복귀 · R은 처음부터`,
+  keyTakesOver: '키를 누르면 직접 조종으로 바뀝니다',
+  randomTip: '무작위·시드는 가상 운전자의 입력 순서에만 쓰입니다. 시뮬레이션 잡음(배경 흔들림·관측 잡음)은 매번 같습니다.',
+  tutorialLine: '자동 모드: 안내를 끝내면 가상 운전자가 이웃차를 운전합니다. 키를 누르면 직접 조종으로 바뀝니다.',
+  unsupported: '자동 모드를 지원하지 않아 직접 조종으로 시작했습니다',
+  stopButtonTip: '자동 주행 중에 누르면 직접 조종으로 바뀝니다',
+  driverKeys: '운전자 키',
+  driverKeysTip: '가상 운전자가 이번 스텝에 넣은 키 (서버 held_applied)',
+  // 데이터 근거 탭
+  source: '입력 출처',
+  sourceAuto: '자동 (가상 운전자)',
+  sourceManualBack: (reason: string) => `직접 조종 · ${reason}`,
+  sourceManualBackTip: '자동 세션에서 사람이 개입해 직접 조종으로 바뀌었습니다. 키 입력이 없으면 자동 주행으로 돌아갑니다(남은 시간은 주행 화면 안내, R은 처음부터).',
+  seedLevel: (seed: number, level: string) => `시드 ${seed} · 위험도 ${level}`,
+  log: '자동 기록',
+  logTip: '자동 운전 기록 — 최근 20개, 서버가 보낸 문구 그대로',
+  logEmpty: '(기록 없음)',
+};
+
+// 굽은 도로 회전 안내 배지 (계약 외, view/road.ts)
+export const ROAD_TEXT = {
+  straight: '↑ 직진 구간',
+  turning: (left: boolean, radiusM: number, angleDeg: number) => `${left ? '↰ 좌' : '↱ 우'}회전 중 · 반경 ${radiusM} m · ${angleDeg}°`,
+  ahead: (left: boolean, distM: number, angleDeg: number) => `${left ? '↰' : '↱'} ${distM} m 앞 ${left ? '좌' : '우'}회전 (${angleDeg}°)`,
 };

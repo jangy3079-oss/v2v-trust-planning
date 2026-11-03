@@ -5,6 +5,9 @@
  */
 import type { DemoConfig } from '../src/contracts.ts';
 
+// 굽은 도로 (명세 5.2, shared/road.ts): straight = 직선, 숫자 = 고정 seed, 그 밖 = 세대마다 무작위. 배너와 session.ts 가 함께 쓴다
+export const MOCK_ROAD = process.env['MOCK_ROAD'] ?? 'random';
+
 export const MOCK_DEMO_CONFIG: DemoConfig = {
   protocol_version: 'v1',
   model_version: 'demo_v15c', // 계약상 리터럴. 목업 서버는 이 모델을 실행하지 않는다
@@ -69,10 +72,10 @@ export const MOCK_DEMO_CONFIG: DemoConfig = {
   ],
   thresholds: { tau_alarm_reference: 0.7, tau_recovery_reference: 0.8 },
   tutorial: [
-    { step: 0, highlight_codes: ['KeyW', 'KeyA', 'KeyS', 'KeyD'], text: 'W/S로 가속·감속하고 A/D로 좌우 조향합니다. 이웃차를 직접 운전해 보세요.' },
+    { step: 0, highlight_codes: ['KeyW', 'KeyA', 'KeyS', 'KeyD'], text: 'W/S로 가속·감속하고 A/D로 좌우 조향합니다. 이 키로 이웃차를 운전합니다.' },
     { step: 1, highlight_codes: ['KeyQ', 'KeyE'], text: 'Q는 왼쪽, E는 오른쪽 깜빡이입니다. 같은 키를 다시 누르면 꺼집니다.' },
     { step: 2, highlight_codes: ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5'], text: '1 드리프트 · 2 조향 고정 · 3 위빙 · 4 급제동 · 5 급가속을 실행합니다. 자차는 이웃차가 자기 진로에 들어올 때만 피합니다(시작 직후 약 10초는 준비 중).' },
     { step: 3, highlight_codes: ['KeyR'], text: 'R을 누르면 차량, 속도, 신뢰도, 그래프와 이 안내까지 처음으로 돌아갑니다.' },
   ],
-  banner: '목업 서버 (실제 15c 아님) · 합성 환경 · 직선 도로 · 단순 근사 시뮬레이션',
+  banner: `목업 서버 (실제 15c 아님) · 합성 환경 · ${MOCK_ROAD === 'straight' ? '직선' : '굽은'} 도로 · 단순 근사 시뮬레이션`,
 };

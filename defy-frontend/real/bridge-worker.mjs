@@ -4,8 +4,7 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 
 const { py, script, cwd, signal, port } = workerData;
-const child = spawn(py, ['-I', '-B', script], { cwd, stdio: ['pipe', 'pipe', 'inherit'] });
-const waiting = new Map();
+const child = spawn(py, ['-X', 'utf8', '-I', '-B', script], { cwd, stdio: ['pipe', 'pipe', 'inherit'] });const waiting = new Map();
 let nextId = 1;
 let dead = null;
 createInterface({ input: child.stdout }).on('line', line => {

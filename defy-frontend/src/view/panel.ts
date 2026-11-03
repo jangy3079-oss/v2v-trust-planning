@@ -5,12 +5,13 @@
  *  탭: 점수·누적량 / 컨텍스트·자차 / 시나리오·로그
  * 고정 뼈대(제목·접기·탭 버튼)는 index.html 에 있고, 여기서는 값만 다시 그린다 (접기·탭 상태 유지).
  */
-import type { ConfigView, EventView, SnapshotView } from '../contract-access';
+import type { AutoView, ConfigView, EventView, SnapshotView } from '../contract-access';
 import { esc, fmt, fmtSigned, kmh, LABEL, ratio, scenarioLabel, yn } from './format';
 import { arcGauge, barGauge, lamp } from './gauges';
 import { PAPER } from './theme';
 import type { ProvenanceMetrics, Reading } from './provenance';
-import { ERROR_TEXT } from '../ui/text-ko';
+import { AUTO_STOP, AUTO_STOP_SHORT, AUTO_TEXT, ERROR_TEXT } from '../ui/text-ko';
+import { autoLevelLabel } from './auto';
 
 export interface PanelElements {
   status: HTMLElement;
@@ -229,8 +230,32 @@ export function createPanel(els: PanelElements, cfg: ConfigView) {
     els.log.innerHTML = `<h4>최근 로그</h4><ul class="log">${rows || '<li class="empty">이벤트 없음</li>'}</ul>`;
   }
 
+  // 자동 세션만: 운전자 기록 팝오버 (서버 auto.log 의 text 그대로). 처음 auto 가 올 때 만든다 → 수동 세션 DOM 은 그대로
+  let autoLog: { box: HTMLDetailsElement; head: HTMLElement; list: HTMLElement; last: AutoView | null } | null = null;
+  function fillAutoLog(): void {
+    if (!autoLog?.box.open || !autoLog.last) return; // 열려 있을 때만 그린다
+    autoLog.head.textContent = AUTO_TEXT.seedLevel(autoLog.last.seed, autoLevelLabel(autoLog.last));
+    autoLog.list.innerHTML = [...autoLog.last.log].reverse() // 최신이 위
+      .map(l => `<li><span class="t">${fmt(l.t, 1)}s</span>${esc(l.text)}</li>`).join('') || `<li class="empty">${esc(AUTO_TEXT.logEmpty)}</li>`;
+  }
+  function renderAutoLog(a: AutoView): void {
+    if (!autoLog) {
+      const box = document.createElement('details');
+      box.id = 'provAutoLog';
+      box.className = 'pop';
+      box.innerHTML = `<summary title="${esc(AUTO_TEXT.logTip)}">${esc(AUTO_TEXT.log)}</summary>`
+        + `<div class="pop-body auto-log-pop"><div class="auto-log-head"></div><ul class="log"></ul></div>`;
+      els.provSource.parentElement?.insertBefore(box, els.provSource.parentElement.querySelector('#provJson'));
+      box.addEventListener('toggle', fillAutoLog);
+      autoLog = { box, head: box.querySelector<HTMLElement>('.auto-log-head')!, list: box.querySelector<HTMLElement>('ul')!, last: null };
+    }
+    autoLog.box.hidden = false;
+    autoLog.last = a;
+    fillAutoLog();
+  }
+
   // 탭 4: 데이터 근거. ● = 로컬 측정 (서버가 아니면 "로컬 샘플 기준")
-  function renderProvenance(m: ProvenanceMetrics): void {
+  function renderProvenance(m: ProvenanceMetrics, auto: AutoView | null = null): void {
     const local = m.source !== 'server';
     els.provSource.textContent = SOURCE_LABEL[m.source];
     els.provSource.className = `prov-source ${local ? 'sample' : 'server'}`;
@@ -246,7 +271,15 @@ export function createPanel(els: PanelElements, cfg: ConfigView) {
       ['서버 held_applied', reading(m.heldApplied, keysText)],
       ['server_time − 내 시계', reading(m.clockOffsetMs, v => `${v > 0 ? '+' : ''}${Math.round(v)} ms`)],
       ['RTT (ping/pong)', reading(m.rttMs, v => `${Math.round(v)} ms`)],
+      // 자동 세션만: 입력 출처 한 줄 (수동 복귀면 사유). 시드·위험도는 자동 기록 팝오버 머리에. 수동 세션은 줄을 추가하지 않는다
+      ...(auto ? ([
+        [AUTO_TEXT.source, auto.state === 'manual'
+          ? `<span title="${esc(`${auto.stoppedReason ? AUTO_STOP[auto.stoppedReason] : '—'} — ${AUTO_TEXT.sourceManualBackTip}`)}">${esc(AUTO_TEXT.sourceManualBack(auto.stoppedReason ? AUTO_STOP_SHORT[auto.stoppedReason] : '—'))}</span>`
+          : esc(AUTO_TEXT.sourceAuto)],
+      ] satisfies Row[]) : []),
     ]);
+    if (auto) renderAutoLog(auto);
+    else if (autoLog) autoLog.box.hidden = true;
     // 연결 상태: 수신 흐름·순서·세션
     els.provConn1.innerHTML = kv([
       [L('수신 속도'), `${m.recvHz.toFixed(1)} Hz`],

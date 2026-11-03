@@ -16,5 +16,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["mock", "real", "vite.config.ts"]
+  "include": ["mock", "real", "shared", "vite.config.ts"]
 }

@@ -9,6 +9,7 @@
  *   POST /api/v1/_mock/faults  { drop_next_ack, ws_error:{code,match}, http_error:{code,match:'METHOD /path',retry_after_s},
  *                                history_delay_ms, conflict_next_hello, overload_ms, internal_error }
  *   POST /api/v1/_mock/drop-connections · /_mock/expire · /_mock/reset-sessions
+ * 계약 외 확장: GET /api/v1/sessions/{id}/road — 굽은 도로 곡률 구간 (src/road-geometry.ts 의 RoadResponse)
  * 실행: npm run mock   (포트: 환경변수 MOCK_PORT, 기본 8787)
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -116,7 +117,7 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
   }
 
   if (method === 'GET' && path === `${BASE}/health`) {
-    const body: HealthResponse = { protocol_version: 'v1', ready: true, model_version: 'demo_v15c', available_solvers: MOCK_DEMO_CONFIG.available_solvers, server_time: now };
+    const body: HealthResponse = { protocol_version: 'v1', ready: true, model_version: 'demo_v15c', available_solvers: MOCK_DEMO_CONFIG.available_solvers, auto_drive_available: false, server_time: now };
     return send(res, 200, body);
   }
   if (method === 'GET' && path === `${BASE}/demo-config`) return send(res, 200, MOCK_DEMO_CONFIG);
@@ -151,10 +152,11 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<vo
     return send(res, 201, payload);
   }
 
-  const m = path.match(new RegExp(`^${BASE}/sessions/([^/]+)(/history|/events)?$`));
+  const m = path.match(new RegExp(`^${BASE}/sessions/([^/]+)(/history|/events|/road)?$`));
   if (m) {
     const e = authorize(req, res, m[1]!);
     if (!e) return;
+    if (method === 'GET' && m[2] === '/road') return send(res, 200, e.s.road()); // 계약 외: 굽은 도로 seed
     if (method === 'DELETE' && !m[2]) {
       e.conn?.ws.close(1000, 'session deleted');
       sessions.delete(m[1]!);

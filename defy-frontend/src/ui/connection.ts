@@ -36,14 +36,20 @@ export function linkLabel(link: LinkState | null): { text: string; bad: boolean 
   }
 }
 
+// 재연결 시도가 이 횟수를 넘으면(백오프 합 약 12초) 서버가 꺼진 것으로 보고 재시작·새로고침을 안내한다
+const SERVER_DOWN_ATTEMPTS = 5;
+
 // 정지 오버레이용 연결 단계
 export function linkPhase(link: LinkState | null): LinkPhase {
   if (!link) return { kind: 'none' };
   switch (link.state) {
     case 'open': return { kind: 'open', recovered: link.recovered };
-    case 'reconnecting': return { kind: 'down', text: `다시 연결하는 중… (${link.attempt}번째 시도 · ${link.reason})` };
+    case 'reconnecting': return {
+      kind: 'down', text: `다시 연결하는 중… (${link.attempt}번째 시도 · ${link.reason})`,
+      hint: link.attempt > SERVER_DOWN_ATTEMPTS ? 'serverDown' : 'waiting',
+    };
     case 'recovering': return { kind: 'recovering', text: `${link.step} 중…` };
-    case 'failed': return { kind: 'down', text: '연결이 종료되었습니다 (오류 카드 참고)' }; // 재개 버튼 비활성
+    case 'failed': return { kind: 'down', text: '연결이 종료되었습니다 (오류 카드 참고)', hint: 'failed' }; // 재개 버튼 비활성
     case 'connecting': return { kind: 'none' }; // 가운데 연결 카드가 표시
   }
 }

@@ -50,9 +50,12 @@ class Bridge:
     def __init__(self):
         import app as A  # noqa: E402  (demo_v15c/app.py, torch 를 불러온다)
         import sim as SM
+        import torch
+        torch.set_num_threads(1)  # app.py 실행 때와 같게 (멀티스레드 추론의 비트 차이 방지)
         self.A, self.SM = A, SM
         self.ses = None
         self.prev_u = (0.0, 0.0)
+        self.driver = None
 
     # ---- 구성
     def hello(self):
@@ -68,19 +71,48 @@ class Bridge:
             r2_calib_ok=bool(c["r2_calib_ok"]), hold_s=3, decay_time_s=20, cap_theta_multiple=2,
             source_ids=["demo_v15c/scratch_v14b/results/eval_v14b.json"]))
 
-    def new(self, solver):
+    def new(self, solver, auto=None):
         self.ses = self.A.Session(solver=solver)
         self.prev_u = (0.0, 0.0)
+        self.driver = None
+        self.resume_stop = False  # auto_resume 이 넣은 0 → 다음 스텝의 auto_stop (scenario.stopped 로 기록)
+        if auto:  # 자동 모드 (명세 1.3). 수동 세션은 driver 없이 기존 경로 그대로
+            if str(HERE) not in sys.path:
+                sys.path.append(str(HERE))  # -I 로 실행되어 스크립트 폴더가 경로에 없다. 15c 모듈보다 뒤에 둔다
+            from auto_driver import AUTO, AutoDriver
+            self.auto_idle_s = AUTO["manual_idle_s"]
+            log = HERE / "logs" / f"auto_{auto.get('session_id', 'local')}_{auto['seed']}.jsonl" if auto.get("log", True) else None
+            self.driver = AutoDriver(auto["seed"], auto.get("level", "normal"), log_path=log,
+                                     meta=dict(session_id=auto.get("session_id"), solver=solver), SM=self.SM)
         return self.parts(False)
 
     def reset(self):
         self.ses.reset()
         self.prev_u = (0.0, 0.0)
+        self.resume_stop = False
+        if self.driver:
+            self.driver.reset()
         return self.parts(False)
 
+    def auto_halt(self, reason):
+        if self.driver:
+            self.driver.halt(self.ses, reason)
+        return None
+
+    def auto_resume(self):
+        """수동 → 자동 (입력 없음, session.ts 가 센다). 장면은 그대로, 정리 키(0·깜빡이)는 다음 스텝 전에 넣는다."""
+        if not self.driver:
+            return None
+        for k in self.driver.resume(self.ses):
+            self.resume_stop |= k == "0"
+            self.ses.key(k)
+        return self.driver.status(self.ses)
+
     # ---- 한 스텝
-    def step(self, held, actions):
+    def step(self, held, actions, takeover=None):
         ses = self.ses
+        if self.driver:
+            return self.auto_step(held, actions, takeover)
         for a in actions:
             act, pl = a["action"], a.get("payload", {})
             if act == "signal.toggle":
@@ -92,6 +124,40 @@ class Bridge:
         self.prev_u = ses.u if ses.u is not None else (0.0, 0.0)
         ses.step(set(held))
         return self.parts(True)
+
+    def apply(self, actions):
+        ses = self.ses
+        for a in actions:
+            act, pl = a["action"], a.get("payload", {})
+            if act == "signal.toggle":
+                ses.key("Q" if pl["side"] == "left" else "E")
+            elif act == "scenario.start":
+                ses.key(KEY_OF_KIND[pl["kind"]])
+            elif act == "scenario.stop":
+                ses.key("0")
+
+    def auto_step(self, held, actions, takeover):
+        """자동 세션 한 스텝. 운전자 조종 중이면 운전자 키만, 개입한 스텝부터는 사람 입력만 쓴다 (섞지 않는다)."""
+        ses, drv = self.ses, self.driver
+        stop, self.resume_stop = self.resume_stop, False
+        if takeover and drv.state != "manual":
+            for k in drv.handback(ses, takeover):  # 운전자가 건 것만 정리 (0 / 깜빡이 끔)
+                stop |= k == "0"
+                ses.key(k)
+        if drv.state == "manual":
+            self.apply(actions)
+            used = set(held)
+        else:
+            keys, used = drv.decide(ses)
+            for k in keys:
+                stop |= k == "0"
+                ses.key(k)
+        self.prev_u = ses.u if ses.u is not None else (0.0, 0.0)
+        ses.step(used)
+        P = self.parts(True)
+        P["auto_held"] = sorted(used)
+        P["auto_stop"] = stop
+        return P
 
     # ---- Snapshot 중 시뮬레이션이 정하는 부분
     def veh(self, v, sig):
@@ -171,6 +237,9 @@ class Bridge:
                              dx_m=out["dx"], g=bool(out["g"]), r2_enabled=bool(ses.det.r2_enabled), r2_calib_ok=bool(ses.det.cfg["r2_calib_ok"])),
                 calibration=cal)
         P["ego_control"] = self.ego_control(sampled)
+        if self.driver:
+            P["auto"] = self.driver.status(ses)
+            P["auto_idle_s"] = self.auto_idle_s
         return P
 
     def ego_control(self, sampled):
@@ -224,11 +293,15 @@ def main():
             if cmd == "hello":
                 data = b.hello()
             elif cmd == "new":
-                data = b.new(req.get("solver", "rule"))
+                data = b.new(req.get("solver", "rule"), req.get("auto"))
             elif cmd == "reset":
                 data = b.reset()
             elif cmd == "step":
-                data = b.step(req.get("held", []), req.get("actions", []))
+                data = b.step(req.get("held", []), req.get("actions", []), req.get("takeover"))
+            elif cmd == "auto_halt":
+                data = b.auto_halt(req.get("reason", ""))
+            elif cmd == "auto_resume":
+                data = b.auto_resume()
             else:
                 raise ValueError(f"unknown cmd {cmd}")
             resp = dict(id=req["id"], ok=True, data=clean(data))

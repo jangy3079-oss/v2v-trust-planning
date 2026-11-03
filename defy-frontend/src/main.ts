@@ -7,15 +7,18 @@ import '@fontsource/barlow-semi-condensed/500.css';
 import '@fontsource/barlow-semi-condensed/600.css';
 import './styles.css';
 import type { ClientMessage, DemoConfig, DemoEvent, Snapshot } from './contracts';
-import { readConfig, readEvent, readSnapshot, snapshotOrder, type EventView, type SnapshotView } from './contract-access';
-import { DATA_SOURCE, SERVER_BASE_URL } from './config';
+import { createSessionBody, readConfig, readEvent, readSnapshot, snapshotOrder, type EventView, type SnapshotView } from './contract-access';
+import { AUTO_START_LEVEL, DATA_SOURCE, DEV_TOOLS, FORCE_MANUAL, SERVER_BASE_URL } from './config';
 import { SAMPLE_DEMO_CONFIG, STATIC_FRAMES } from './source/fixtures';
 import { createSamplePlayer } from './source/sample-player';
-import { createServerSource, fetchDemoConfig, type LinkState, type SnapshotKind } from './source/ws-client';
+import { createServerSource, CREATE_ORIGIN, fetchAutoDriveAvailable, fetchDemoConfig, type LinkState, type SnapshotKind } from './source/ws-client';
 import { createRoadView } from './view/road';
+import { createRoad, STRAIGHT_ROAD, type Road } from './road-geometry';
+import { SAMPLE_ROAD } from './source/sample-road';
 import { createChartHistory, createChartView } from './view/chart';
 import { createPanel } from './view/panel';
 import { createKeysView } from './view/keys';
+import { createAutoView } from './view/auto';
 import { createRenderBuffer } from './view/interp';
 import { esc } from './view/format';
 import { createInputController, type SendKind } from './input/controller';
@@ -26,7 +29,7 @@ import { createTutorialOverlay } from './ui/tutorial';
 import { createConnectionOverlay, linkLabel, linkPhase } from './ui/connection';
 import { createErrorUi, newSessionAction, type ErrorCardAction } from './ui/error';
 import { errorPolicy } from './source/error-policy';
-import { BUTTON, ERROR_TEXT, LOCK_TEXT, RATE_LIMIT_WAIT } from './ui/text-ko';
+import { AUTO_TEXT, BANNER_TEXT, BUTTON, ERROR_TEXT, LOCK_TEXT, RATE_LIMIT_WAIT } from './ui/text-ko';
 import { FAULTS } from './ui/debug-faults';
 import type { ServerErrorView } from './source/ws-client';
 
@@ -40,10 +43,20 @@ const STALE_MS = 250;    // 명세 4.2
 const LOG_LINES = 80;
 const PING_MS = 1000;    // 명세 6.2: ping 1초 주기
 
-// 주소 해시 옵션: #debug (디버그 창 표시), frame=<id> (정적 확인 프레임). 예: #debug&frame=nmpc
-const hashOpts = new Set(location.hash.replace(/^#/, '').split('&').filter(Boolean));
+// 주소 해시 옵션: #debug (디버그 창 표시), frame=<id> (정적 확인 프레임). 예: #debug&frame=nmpc. 개발 모드에서만 (시연 빌드는 무시)
+const hashOpts = new Set(DEV_TOOLS ? location.hash.replace(/^#/, '').split('&').filter(Boolean) : []);
 const DEBUG = hashOpts.has('debug');
 const hashFrame = [...hashOpts].find(o => o.startsWith('frame='))?.slice('frame='.length) ?? '';
+// ?road=straight: 굽은 도로를 끄고 직선으로 (계약 원래 모양)
+const ROAD_STRAIGHT = new URLSearchParams(location.search).get('road') === 'straight';
+const ROAD_REFETCH_MARGIN_M = 1500; // 받은 도로 끝까지 이만큼 남으면 다음 구간을 받는다
+const ROAD_RETRY_MS = 2000;
+// 실제 15c 서버의 DemoConfig.banner 머리 (real/config.ts). 목업은 "목업 서버 (실제 15c 아님) · …" (mock/config.ts)
+const REAL_SERVER_BANNER = '실제 15c';
+// INTERNAL_ERROR 가 이 시간 안에 이만큼 오면 서버(python 브리지)가 멈춘 것으로 본다. R 직후·세션 생성 실패는 1번이면
+const RESTART_WINDOW_MS = 10_000;
+const RESTART_COUNT = 3;
+const RESTART_SAME_MS = 1000; // 이 간격 안의 INTERNAL_ERROR 는 같은 오류로 본다
 
 const connUi = createConnectionOverlay();
 const errorUi = createErrorUi();
@@ -57,6 +70,7 @@ async function loadDemoConfig(): Promise<DemoConfig | null> {
   } catch (e) {
     // 서버를 못 찾으면 샘플로 바꾸지 않고 오류 카드만
     console.warn('[server] DemoConfig 실패', e);
+    el('bannerTitle').textContent = BANNER_TEXT.unreachable; // index.html 기본 문구(샘플 데이터)가 남지 않게
     connUi.hide();
     errorUi.show('CONNECTION_FAILED', [newSessionAction()]);
     return null;
@@ -85,6 +99,8 @@ function boot(demoConfig: DemoConfig): void {
   const PROVENANCE_RENDER_MS = 250;
   let provRenderedAt = 0;
   const keys = createKeysView(el('keyRows'), el('keyNote'), cfg);
+  // 자동 모드 표시: Snapshot.auto 가 있을 때만 요소를 만든다 (수동 세션 화면은 그대로)
+  const autoView = createAutoView(el('roadDock'), el('keys'), cfg);
 
   const state = {
     mode: (server ? 'server' : 'play') as 'play' | 'static' | 'server',
@@ -99,6 +115,8 @@ function boot(demoConfig: DemoConfig): void {
     link: null as LinkState | null,                     // 서버 모드 연결 상태
     fatal: null as string | null,                       // 세션을 더 쓸 수 없는 오류 코드 (운전 잠금)
     lock: null as string | null,                        // 지금 표시 중인 운전 잠금 이유
+    autoRequested: false,                               // 자동 세션을 요청했음 (지원 안 함 토스트 1회)
+    internalAt: [] as number[],                         // 최근 INTERNAL_ERROR 시각 (서버 재시작 판단)
   };
 
   // ---- 수신: 샘플 재생기·정적 프레임·서버(ready/telemetry/ack) 공통 ----
@@ -111,6 +129,12 @@ function boot(demoConfig: DemoConfig): void {
     const older = !!cur && (o.generation < cur.generation || (o.generation === cur.generation && o.frameSeq <= cur.frameSeq));
     if (!older) {
       const view = readSnapshot(snap);
+      syncRoad(view);
+      // 스텝 실패는 오류 메시지 없이 phase=error 로만 온다: 새로 error 가 된 표본도 INTERNAL_ERROR 1번으로 센다
+      if (server && view.phase === 'error' && view.runtime.error?.code === 'INTERNAL_ERROR'
+        && (cur?.phase !== 'error' || cur.generation !== view.generation) && needsRestart(null)) lockRestart();
+      // 자동을 요청했는데 서버가 auto 없이 수동 세션을 만들었다 (명세 5.1): 첫 표본에서 한 번 알린다
+      if (state.autoRequested) { state.autoRequested = false; if (!view.auto) errorUi.toast(AUTO_TEXT.unsupported, 6000); }
       if (buffer.push(view, now)) history.clear(); // 새 generation: 이전 그래프 비움
       state.latest = view;
       history.add(view);
@@ -118,6 +142,29 @@ function boot(demoConfig: DemoConfig): void {
     }
     if (cur && o.generation < cur.generation) return; // 과거 세대 이벤트 무시
     mergeEvents(o.generation, events);
+  }
+
+  // 굽은 도로 (명세 5.2): 샘플은 고정 도로, 서버는 generation 마다 GET /road. 받기 전·실패·/road 없는 서버(400)면 직선
+  const roadState = {
+    road: (ROAD_STRAIGHT || server ? STRAIGHT_ROAD : createRoad(SAMPLE_ROAD)) as Road,
+    generation: null as number | null,
+    loading: false,
+    retryAt: 0,
+  };
+  function syncRoad(view: SnapshotView): void {
+    if (!server || ROAD_STRAIGHT || roadState.loading || performance.now() < roadState.retryAt || !serverSource) return;
+    const stale = view.generation !== roadState.generation;
+    if (!stale && Math.max(view.ego.x, view.nb.x) < roadState.road.coveredUntil - ROAD_REFETCH_MARGIN_M) return;
+    roadState.loading = true;
+    serverSource.fetchRoad()
+      .then(r => {
+        if (!r) { roadState.road = STRAIGHT_ROAD; roadState.generation = view.generation; return; } // 도로 확장이 없는 서버
+        if (r.generation !== state.latest?.generation) return; // 그사이 리셋 → 다음 표본에서 다시
+        roadState.road = createRoad(r);
+        roadState.generation = r.generation;
+      })
+      .catch(e => { console.warn('[road] GET /road 실패 — 잠시 뒤 다시', e); roadState.retryAt = performance.now() + ROAD_RETRY_MS; })
+      .finally(() => { roadState.loading = false; });
   }
 
   // 이벤트 합치기: generation 별, event_seq 로 중복 제거·정렬 (telemetry 와 GET /events 공통). 반환: 새로 합친 수
@@ -194,7 +241,9 @@ function boot(demoConfig: DemoConfig): void {
       case 'resync': input.allowTutorialRetry(); serverSource?.resync(); return;
       case 'reconnect': serverSource?.forceReconnect(`${err.code} — 최신 연결·커서 확인 후 재접속`); return;
       case 'rateLimited': errorUi.toast(`${ERROR_TEXT.RATE_LIMITED!.title} — 입력 전송을 잠시 줄였습니다`); input.slowDown(10_000); return;
-      case 'internal': errorUi.toast(ERROR_TEXT.INTERNAL_ERROR!.title, 6000); serverSource?.resync(); return;
+      case 'internal':
+        if (needsRestart(err.origin)) return lockRestart();
+        errorUi.toast(ERROR_TEXT.INTERNAL_ERROR!.title, 6000); serverSource?.resync(); return;
       case 'ended': return lockFatal(err.code, [newSessionAction()]);
       case 'conflict': return lockFatal(err.code, [{ label: BUTTON.retry, run: () => { state.fatal = null; serverSource?.retryConnect(); } }]);
       case 'unavailable': return lockFatal(err.code, [err.retryable ? { label: BUTTON.retry, run: () => location.reload() } : newSessionAction()]);
@@ -208,6 +257,19 @@ function boot(demoConfig: DemoConfig): void {
     input.clearInputs();
     errorUi.show(code, actions);
     state.shown = null;
+  }
+
+  // INTERNAL_ERROR 1번을 기록하고, 서버를 다시 켜야 하는지: R(session.reset) 직후·세션 생성 실패, 또는 10초 안에 3번
+  function needsRestart(origin: string | null): boolean {
+    const now = performance.now();
+    state.internalAt = state.internalAt.filter(t => now - t < RESTART_WINDOW_MS);
+    // 같은 오류가 오류 메시지와 phase=error 표본으로 겹쳐 오면(목업 등) 1번으로 센다
+    const last = state.internalAt[state.internalAt.length - 1];
+    if (last == null || now - last > RESTART_SAME_MS) state.internalAt.push(now);
+    return origin === 'session.reset' || origin === CREATE_ORIGIN || state.internalAt.length >= RESTART_COUNT;
+  }
+  function lockRestart(): void {
+    if (!state.fatal) lockFatal('SERVER_RESTART_NEEDED', [newSessionAction()]);
   }
 
   // 운전 입력이 막힌 이유 (키 영역·도로에 작게)
@@ -302,7 +364,7 @@ function boot(demoConfig: DemoConfig): void {
     provenance.onFrame(now);
     if (now - provRenderedAt >= PROVENANCE_RENDER_MS) {
       provRenderedAt = now;
-      panel.renderProvenance(provenance.metrics(now));
+      panel.renderProvenance(provenance.metrics(now), state.latest?.auto ?? null);
     }
     const d = buffer.sample(now);
     const lock = lockReason();
@@ -314,7 +376,7 @@ function boot(demoConfig: DemoConfig): void {
     }
     tutorial.update(state.mode !== 'static' && (state.mode !== 'server' || linkOpen()) ? state.latest : null);
     if (d) {
-      road.render({ ego: d.ego, nb: d.nb, simTime: d.simTime, view: d.current, showHud: state.showHud, avoid: [dockRect()] });
+      road.render({ ego: d.ego, nb: d.nb, simTime: d.simTime, view: d.current, showHud: state.showHud, avoid: [dockRect()], road: roadState.road });
 
       const last = buffer.lastReceivedMs();
       const stale = state.mode !== 'static' && d.current.phase === 'running' && last != null && now - last > STALE_MS;
@@ -323,6 +385,7 @@ function boot(demoConfig: DemoConfig): void {
         state.shownStale = stale;
         panel.render(d.current, { stale, link: linkLabel(state.link) });
         keys.render(d.current, state.pressed, state.lock);
+        autoView.render(d.current);
         // 세대·frame·재생 상태는 디버그 창에서만
         dbgStatus.textContent = `gen ${d.current.generation} · frame ${d.current.frameSeq} · tick ${d.current.sampleTick} · 그래프 표본 ${history.size} · ${playbackLabel()}`;
       }
@@ -359,9 +422,13 @@ function boot(demoConfig: DemoConfig): void {
   }
 
   // ---- 시작 ----
-  el('bannerTitle').textContent = server
-    ? '서버 모드 — 연결된 서버의 값 (목업 서버는 실제 15c 아님)'
+  // 서버 모드: 실제 15c 서버면 경고가 아닌 표시, 그 밖(목업 등)은 지금처럼 경고 표시
+  const realServer = server && cfg.banner.startsWith(REAL_SERVER_BANNER);
+  const bannerTitle = el('bannerTitle');
+  bannerTitle.textContent = server
+    ? (realServer ? BANNER_TEXT.real : BANNER_TEXT.other)
     : '샘플 데이터 — 실제 15c 출력 아님';
+  bannerTitle.className = realServer ? 'server' : 'sample';
   el('bannerInfo').title = [
     cfg.banner, `원본 보정 기준과 다른 k_drain=${cfg.kDrainDefault}`,
     server ? `서버 모드: ${SERVER_BASE_URL} (개발 서버가 프록시)` : '서버 미연결 — 샘플 Snapshot 재생',
@@ -380,6 +447,7 @@ function boot(demoConfig: DemoConfig): void {
   initTabs();
   initProvenanceJson();
   el('debug').hidden = !DEBUG;
+  el('testBar').hidden = !DEV_TOOLS; // "테스트" 드롭다운은 개발 모드에서만
   // 서버 모드 시험 도구 (#debug): 연결 끊기·ack 유실·입력 멈춤
   el('dbgServer').hidden = !serverSource;
   if (serverSource) {
@@ -415,7 +483,12 @@ function boot(demoConfig: DemoConfig): void {
     sel.innerHTML = '<option>서버 모드 (?source=server)</option>';
     sel.disabled = true;
     provenance.setSource('server');
-    void serverSource.start();
+    // 자동 모드를 지원하는 서버면 바로 자동 세션 {auto_drive, auto_level}. 아니면(목업·health 실패) 또는 ?mode=manual 이면 기존처럼 {} 로 rule 세션
+    void (async () => {
+      if (FORCE_MANUAL || !(await fetchAutoDriveAvailable(SERVER_BASE_URL))) return serverSource.start();
+      state.autoRequested = true;
+      return serverSource.start(createSessionBody({ solver: 'rule', auto: { level: AUTO_START_LEVEL, seed: null } }));
+    })();
   } else {
     // 샘플 모드: 샘플 재생(기본) 또는 정적 확인 프레임
     sel.innerHTML = '<option value="play">샘플 재생 (90초 타임라인 반복)</option>'

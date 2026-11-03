@@ -1,6 +1,10 @@
 /**
  * 15c web demo protocol v1 — implementation contract, not an existing server.
  * Spec 1.2 (v15c-fix): lane-anchored ego targets, NMPC as planner (policy_target_y_m / nmpc_override added).
+ * Spec 1.4: optional auto drive (server-side virtual driver for the neighbor). Additive only; protocol stays v1.
+ * Spec 1.5: auto drive risk level, server-chosen seed, hand-back to manual on human input. Additive only.
+ * Spec 1.6: auto drive takes over again after 10 s without human input (auto_resume_in_s). Additive only.
+ * Spec 1.7: GET /sessions/{id}/road (RoadResponse), display-only curved road. Simulation stays straight. Additive only.
  * Normative behavior: WEB_DEMO_TECH_SPEC.md.
  * JSON numbers must be finite; integer IDs/cursors must be safe integers.
  * All object fields are required unless marked ?. Unknown request fields fail.
@@ -39,6 +43,7 @@ export interface HealthResponse {
   ready: boolean;
   model_version: "demo_v15c";
   available_solvers: Solver[];
+  auto_drive_available: boolean; // 1.4: false on sample/mock servers (client hides the toggle)
   server_time: Timestamp;
 }
 
@@ -136,7 +141,11 @@ export interface DemoConfig {
 }
 
 // POST /api/v1/sessions. Header Idempotency-Key: UUID required.
-export interface CreateSessionRequest { solver?: Solver }
+// 1.4: auto_drive (default false) lets the server drive the neighbor; auto_seed is a safe integer >= 0
+// that seeds only the virtual driver. 1.5: auto_seed omitted → the server picks one and reports it in Snapshot.auto.seed;
+// auto_level (default "normal") sets the event interval. The Idempotency-Key body comparison uses auto_drive/auto_seed/
+// auto_level exactly as sent (omitted stays omitted); solver keeps its default-filled comparison.
+export interface CreateSessionRequest { solver?: Solver; auto_drive?: boolean; auto_seed?: number; auto_level?: AutoDriveLevel }
 export interface CreateSessionResponse {
   protocol_version: ProtocolVersion;
   session_id: string;
@@ -312,6 +321,29 @@ export interface ScenarioReport {
   a2_delay_s: number | null;
 } // null delay means not observed in source report; not necessarily impossible
 
+// 1.4 auto drive. cruise = before the first countdown, wait = counting down to the next event,
+// event = an event is running, recover = event over, waiting for the recovery condition.
+// 1.5: manual = a human input/command took over. 1.6: manual → recover after 10 s of running time without human input
+// (the driver takes over from the current state, no reset); reset (R) still restarts from the beginning.
+export type AutoDriveState = "cruise" | "wait" | "event" | "recover" | "manual";
+// 1.5: random switches among low/normal/high every 30–60 s.
+export type AutoDriveLevel = "low" | "normal" | "high" | "random";
+// 1.5: why the driver handed back to manual. human_input = non-empty held/tapped, human_command = signal.toggle/scenario.*
+export type AutoStopReason = "human_input" | "human_command";
+export interface AutoDriveStatus {
+  enabled: boolean; // false: manual session (other fields are inert)
+  seed: number; // 1.5: the server-chosen seed when the request omitted auto_seed
+  level_setting: AutoDriveLevel; // 1.5: as requested (default normal)
+  level: "low" | "normal" | "high"; // 1.5: level in effect now (changes over time when level_setting is random)
+  state: AutoDriveState;
+  stopped_reason?: AutoStopReason | null; // 1.5: set only in manual
+  auto_resume_in_s?: number | null; // 1.6: seconds left until the driver takes over again, only in manual (null otherwise); counts only while running
+  event_kind: string | null; // ScenarioKind or "cut_in"; null outside event/recover
+  next_event_in_s: number | null; // only in wait
+  edge_margin_m: number; // 5.25 − (|neighbor y| + 0.9): distance from the neighbor body to the road edge
+  log: { t_s: number; text: string }[]; // latest 20, oldest first
+}
+
 // GET /sessions/{id}, also nested in WS ready/telemetry/ack.
 export interface Snapshot {
   protocol_version: ProtocolVersion;
@@ -354,6 +386,9 @@ export interface Snapshot {
     resume_phase: "tutorial" | "running" | null;
     error: ApiError | null;
   };
+  // 1.4: absent from pre-1.4 servers. While the driver is in control (auto.state ≠ manual) inputs.held_applied are the
+  // driver's keys and held_received is []. 1.5: after a hand-back (manual) inputs behave as in a manual session.
+  auto?: AutoDriveStatus;
 }
 
 // Graph history: the server stores one sample per completed step.
@@ -400,6 +435,32 @@ export interface EventsResponse {
   latest_event_seq: number | null;
   truncated: boolean;
   events: DemoEvent[];
+}
+
+// GET /sessions/{id}/road (spec 1.7, 5.2). Display only: x_m = distance s along the road centerline,
+// y_m = lateral offset d from the centerline (left +), psi_rad = heading relative to the road tangent.
+// The 15c simulation is straight; curvature never reaches dynamics or the detector.
+// A server without this path may answer 400 INVALID_ARGUMENT; clients then draw a straight road.
+export interface RoadPiece {
+  s0_m: number;
+  s1_m: number;
+  k0_1pm: number; // curvature at s0_m, 1/m, left +
+  k1_1pm: number; // curvature at s1_m; linear in s between
+}
+export interface RoadTurnInfo {
+  turn: "left" | "right";
+  start_s_m: number; // includes transition curves
+  end_s_m: number;
+  radius_m: number;
+  angle_deg: number;
+}
+export interface RoadResponse {
+  generation: number; // current generation; a new road per generation (session.created / session.reset)
+  generator: "defy-road-v1";
+  seed: number | null; // road seed for reproduction (independent of auto_seed); null = straight
+  covered_until_m: number; // pieces are complete for s < covered_until_m (a piece may end past it); request again before reaching it
+  pieces: RoadPiece[]; // sorted by s0_m; s outside every piece has curvature 0
+  turns: RoadTurnInfo[];
 }
 
 export interface HelloMessage {

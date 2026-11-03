@@ -1,10 +1,43 @@
 # 15c 실시간 차량 시연 웹사이트 기술 명세서
 
-작성일: 2026-10-29 · 명세 버전: 1.3 (자차 조향 한계 상향·종횡 연동 회피·앞차 따라가기·회피 모드 단일화 반영) · 프로토콜: `v1` · 기준: `demo_v15c`
+작성일: 2026-10-29 · 개정: 2026-11-02 · 명세 버전: 1.7 (표시용 굽은 도로 `GET /road`) · 프로토콜: `v1` · 기준: `demo_v15c`
 
 대상: 프론트엔드, 백엔드, 모델 연동 담당자, QA.
 
 **이 문서는 구현 계약이다. 아래 HTTP/WebSocket API는 새로 구현할 규격이며 현재 15c에 존재하는 API가 아니다.** 현재 구현은 Python 시뮬레이션과 Pygame 화면이다. 기존 모델·시뮬레이션 소스는 변경하지 않고 웹 어댑터를 추가하는 것을 기준으로 한다. 함께 제공하는 [web-demo-contracts.ts](web-demo-contracts.ts)는 요청·응답의 필드와 타입을 정의한다. 본문의 동작·검증 규칙과 함께 적용한다.
+
+### 변경 요약 (v1.6 → v1.7)
+
+화면에 굽은 도로를 그리도록 `GET /sessions/{id}/road`(`RoadResponse`)를 정식으로 정의했다(5.2절). 곡선은 **표시용**이며 15c 시뮬레이션·탐지기·자차 회피는 직선 그대로다. 계약은 하위 호환 추가만, `protocol_version`은 `v1` 그대로다.
+
+### 변경 요약 (v1.5 → v1.6)
+
+자동 모드 `manual`에서 사람 입력 없이 running 시간 10초가 지나면 현재 상태에서 가상 운전자가 이어받는다(`manual → recover`, 장면 초기화 없음, `AutoDriveStatus.auto_resume_in_s` 추가, 1.3절). 계약은 하위 호환 추가만, `protocol_version`은 `v1` 그대로다.
+
+### 변경 요약 (v1.4 → v1.5)
+
+자동 모드(1.3절)를 실제 서버에 붙이면서 규칙을 확정했다. 계약은 **하위 호환 추가만** 했고 `protocol_version`은 `v1` 그대로다. 자동 모드를 켜지 않은 세션의 동작은 바뀌지 않는다.
+
+| 항목 | v1.4 | v1.5 |
+|---|---|---|
+| 사람 입력 | 자동 모드에서 들어온 입력·운전 명령은 무시 | 비어 있지 않은 held·tapped 또는 운전 명령(`signal.toggle`, `scenario.*`)이 오면 **자동을 멈추고 수동으로 복귀**(`auto.state=manual`, `stopped_reason`). R(리셋) 또는 입력 없이 10초(현재 상태에서 이어받음) |
+| 위험도 | 이벤트 간격 8~20초 하나 | `auto_level` low 15~30초 / normal 8~20초(기본) / high 4~10초 / random(30~60초마다 단계 전환) |
+| 시드 | `auto_seed` 생략 시 0 | 생략 시 서버가 정해 `Snapshot.auto.seed`로 알림(세션에 저장, R 뒤에도 같은 시드) |
+| 멱등키 비교 | 기본값을 채운 값 | 자동 모드 필드는 요청에 들어온 그대로(생략은 생략). `solver`는 기존대로 |
+| 방향지시등 | `cut_in`은 항상 깜빡이 | `cut_in`에서만 단계별 확률(low 100% / normal 70% / high 30%) |
+| `AutoDriveStatus` | — | `level_setting`, `level`, `state="manual"`, `stopped_reason?` 추가 |
+
+### 변경 요약 (v1.3 → v1.4)
+
+웹 어댑터에 **자동 모드(가상 운전자)** 를 추가했다. 15c 알고리즘(`demo_v15c`의 시뮬레이션·탐지·누적·자차 회피)은 바뀌지 않는다. 계약은 **하위 호환 추가만** 했고 `protocol_version`은 `v1` 그대로다. 자동 모드를 켜지 않은 세션의 동작은 v1.3과 같다. 동작 규칙은 1.3절.
+
+| 항목 | v1.3 | v1.4 |
+|---|---|---|
+| 이웃차 조종 | 시연자가 WASD·Q/E·1~5로 직접 | 직접 조종(기본) **또는** 세션 생성 때 `auto_drive=true`로 서버의 가상 운전자가 조종 |
+| `CreateSessionRequest` | `{solver?}` | `{solver?, auto_drive?, auto_seed?}` |
+| `HealthResponse` | — | `auto_drive_available` 추가(샘플·목업은 false) |
+| `Snapshot` | — | 선택 필드 `auto?: AutoDriveStatus` 추가 |
+| 입력 TTL | running 이면 항상 적용 | 자동 모드 세션에는 적용하지 않음(연결 생존 ping 규칙은 유지) |
 
 ### 변경 요약 (v1.2 → v1.3)
 
@@ -40,7 +73,7 @@ v1.1은 v15c-fix 이전 코드 기준이었다. 당시 자차는 차선을 무�
 | 항목 | 요구사항 / 결정 |
 |---|---|
 | 차량 | 자차 1대 + 시연자가 운전하는 이웃차 1대 |
-| 도로 | 직선 3차로, 차로 폭 3.5m, 차량 크기 4.5 × 1.8m |
+| 도로 | 직선 3차로, 차로 폭 3.5m, 차량 크기 4.5 × 1.8m. 화면은 서버가 준 곡선 위에 같은 좌표를 얹어 그릴 수 있다(표시용, v1.7, 5.2절) |
 | 왼쪽 화면 | 두 차량의 위치·방향·이동·이웃차 깜빡이·탐지/반응 경보 표시 |
 | 오른쪽 화면 | 실시간 신뢰도 그래프, 점수·누적량·자차 반응·시나리오 상태 |
 | 오른쪽 아래 | 실제 키보드 배열의 Q/W/E, A/S/D; 숫자 1~5와 R도 별도 행에 표시 |
@@ -92,6 +125,32 @@ v1.1은 v15c-fix 이전 코드 기준이었다. 당시 자차는 차선을 무�
 
 복귀에는 신뢰도 회복 2초와 간격 확보, 또는 추월/전방·도로 밖 이탈 조건을 사용한다. 정확한 경계와 단계는 `planning_demo.DemoStateMachine.update()`를 따른다. 규칙을 웹에서 다시 계산하지 않는다. 원본 `ego_rec.ttc`는 종방향 보조 TTC이고 **정책의 TTC는 횡 접근까지 고려한 별도 값**이다.
 
+### 1.3 자동 모드(가상 운전자, v1.4 · v1.5 · v1.6)
+
+자동 모드는 시연자 대신 서버가 이웃차를 조종하는 웹 어댑터 기능이다. 15c 코드는 그대로이며, 가상 운전자는 시연자와 **같은 입구**(WASD 눌림 집합, Q/E, 1~5/0)만 사용한다. 이웃 상태를 직접 바꾸지 않는다.
+
+| 항목 | 규칙 |
+|---|---|
+| 켜기 | `POST /sessions` 본문 `auto_drive=true`. 세션 도중 사람이 다시 켤 수는 없다(새 세션 또는 R). R(초기화)은 같은 설정·같은 시드로 다시 시작 |
+| 시드 | `auto_seed`(0 이상 안전 정수)는 가상 운전자의 난수에만 쓴다. 생략하면 서버가 정해 세션에 저장하고 `auto.seed`로 알린다(v1.5). 시뮬레이션 시드는 1절 기본값 그대로. 같은 시드·같은 solver·같은 단계면 같은 이벤트 순서 |
+| 시작 | 안내는 건너뛰지 않는다. 사람이 안내 4단계를 끝내 running이 되면 `cruise`부터 시작한다. 생성 직후와 R 뒤가 같다 |
+| 상태 | `cruise`(첫 대기 전) → `wait`(다음 이벤트까지 카운트다운) → `event` → `recover` → `wait` … 이벤트·회복 중에는 새 이벤트를 시작하지 않는다. 사람이 개입하면 `manual`(v1.5). `manual`에서 입력 없이 10초가 지나면 `recover`(v1.6) |
+| 위험도(v1.5) | `auto_level`(기본 `normal`). 이벤트 간격(균등): low 15~30초, normal 8~20초, high 4~10초. `random`은 30~60초마다 low/normal/high 중 하나로 바꾼다. 현재 단계는 `auto.level` |
+| 이벤트 간격 | 이전 이벤트가 끝나고 **회복이 완료된 뒤부터** 단계별 간격 |
+| 이벤트 종류 | 시나리오 1~5, 차로 진입(`cut_in`: (방향지시등) → A/D로 자차 차로 쪽 진입 → 회복 때 원래 차로로 복귀). 6가지 균등 |
+| 방향지시등(v1.5) | `cut_in`에서만 단계별 확률로 켠다: low 100%, normal 70%, high 30%. 다른 이벤트 앞에서는 켜지 않는다. 켰으면 복귀 시작 때 끈다 |
+| 시나리오 종료 | drift/stuck/weave는 정해진 지속 시간 뒤 `0`(해제, 이벤트 `scenario.stopped`). brake/accel은 원본이 자동 종료할 때까지 기다린다(`scenario.finished`) |
+| 회복 완료 | 주입 없음, 방향지시등 꺼짐, 이웃이 자기 차로 중심 ±0.5m 안, 자차 상태 `NORMAL`이 함께 성립 |
+| 도로 이탈 방지 | 매 스텝 `edge_margin_m = 5.25 − (\|y\| + 0.9)`. 여유가 0.5m보다 작으면 바깥쪽 A/D 금지·안쪽으로 복귀, 필요하면 시나리오 해제. 기본 배치(바깥 차로 중심 \|y\|=3.5)에서 여유가 이미 0.85m이므로 1.0m가 아니라 0.5m다(바깥 차로 중심 +0.35m까지 허용). 횡방향 시나리오는 이웃이 도로 중앙 쪽에 있을 때만 시작. 횡방향 시나리오 중에는 A/D를 넣지 않는다 |
+| 정지 | running일 때만 동작한다. 일시정지·연결 끊김·입력 정지·오류·R 시 운전자 키를 즉시 떼고 멈춘다. 재개는 사람이 한다(resume, 카운트다운 유지). 연결이 다시 붙어도 자동 재개하지 않는다. 카운트(다음 이벤트까지, 수동 복귀 뒤 10초)는 running에서만 흐름 |
+| 사람 개입(v1.5) | 운전자가 조종 중일 때 비어 있지 않은 `held`·`tapped`가 담긴 `input.state`(`stopped_reason=human_input`) 또는 운전 명령 `signal.toggle`/`scenario.*`(`human_command`)가 오면 그 스텝부터 사람 입력만 쓰고 `manual`로 바꾼다. 같은 스텝에 두 입력을 섞지 않는다. 복귀 때 운전자가 건 횡방향 시나리오는 `0`으로 해제(`scenario.stopped`), brake/accel은 원본이 끝내게 두고, 운전자가 켠 깜빡이는 끈다. 빈 `input.state`와 `session.reset/pause/resume`, `tutorial.advance`는 개입이 아니다. R을 누르면 처음부터 다시 시작한다 |
+| 자동 복귀(v1.6) | `manual`에서 비어 있지 않은 `held`·`tapped` 또는 운전 명령 없이 running 스텝이 10초(`AUTO.manual_idle_s` ÷ 0.1초) 지나면 `manual → recover`. 사람 입력이 오면 10초를 처음부터 센다. 장면·세대·안내 단계·기록·운전자 난수는 그대로이고(R과 다름), 복귀 목표는 이웃의 현재 차로 중심이다(자차 차로면 가까운 옆 차로). 복귀 때 사람이 켠 횡방향 시나리오는 `0`으로 해제(`scenario.stopped`), 켠 깜빡이는 끈다. brake/accel은 원본이 끝내게 둔다. 남은 초는 `auto.auto_resume_in_s`(`manual`일 때만, 그 밖에는 null) |
+| 입력 TTL | 운전자가 조종 중(`manual`이 아님)이면 적용하지 않는다. `manual`이 되면 수동 세션과 같이 적용한다. 3초 무응답 연결 종료(`paused/disconnected`)는 항상 그대로 |
+| 표시 | `Snapshot.auto`: 상태·단계·이벤트 종류·다음 이벤트까지 남은 초·도로 가장자리 여유·수동 복귀 사유·최근 20개 로그. 운전자 조종 중 `inputs.held_applied`는 운전자가 쓴 키, `held_received`는 빈 배열. 수동 복귀 사유는 데이터 근거 탭에 표시한다 |
+| 기록 | 운전자가 넣은 키·이벤트·단계 변경·정지를 시드와 함께 `real/logs/auto_<세션>_<seed>.jsonl`에 남긴다(저장소에 넣지 않음) |
+
+조정값(간격·확률·여유·키 유지 시간·지속 시간)은 `real/auto_driver.py` 맨 위 `AUTO` 한 곳에 둔다. 표에 없는 값(cruise 시간, 횡 시나리오 지속, 접근 거리, cut_in 유지, 회복 시간 초과)은 구현 상수이며 조정 가능하다. 샘플 모드와 목업 서버는 자동 모드가 없으며 `auto_drive_available=false`, `auto.enabled=false`를 보낸다.
+
 엔진을 바꾸려면 기존 세션을 종료하고 새 세션을 생성하여 안내부터 시작한다. R은 선택한 엔진과 최초 설정으로 돌아간다. NMPC solver 실패 시 원본 fallback 가속 −3m/s²를 쓰고(정책 제동이 더 강하면 정책 값), 조향은 정책 경로 추종으로 유지한다(Y=0 강제 복귀 없음). 이를 표시한다. 세션의 엔진 표시를 조용히 rule로 바꾸지 않는다.
 
 ## 2. 코드 근거와 보존해야 할 동작
@@ -114,6 +173,7 @@ v1.1은 v15c-fix 이전 코드 기준이었다. 당시 자차는 차선을 무�
 
 - 단위: 거리 m, 시간 s, 속도 m/s, 가속 m/s², 각도 rad, 요레이트 rad/s. km/h 표시는 프론트에서 ×3.6.
 - 월드 `x`: 도로 전방으로 증가. `y`: 왼쪽으로 증가. `psi=0`: 도로 전방. 양의 각도는 좌향.
+- 굽은 도로 표시(v1.7, 5.2절)에서는 같은 값을 도로 기준으로 읽는다: `x_m` = 도로 중심선을 따라간 거리 s, `y_m` = 중심선 기준 횡위치 d(왼쪽 +), `psi_rad` = 도로 접선 기준 방향각. 15c 시뮬레이션은 직선 평면 좌표 그대로다.
 - 차로 ID는 원본 그대로 **0=오른쪽(y=−3.5), 1=중앙(y=0), 2=왼쪽(y=+3.5)**. 일반적인 왼쪽부터 1차로 번호와 혼동하지 않는다.
 - 차로 바깥 경계 y=±5.25, 내부 경계 y=±1.75. 도로 밖 주행을 임의로 clamp하지 않는다. 필요하면 바깥 방향 표시를 한다.
 - S는 감속이며 후진 기어가 아니다. 현재 공통 Vehicle은 속도 하한 0이며 고정 50m/s 상한은 없다. 이전 생성기의 V_LIM=(1,50)을 현재 차량 제한으로 노출하지 않는다. 화면에서 뒤로 움직이는 것은 자차 대비 상대 이동일 수 있다.
@@ -265,6 +325,7 @@ REST 세션 API는 `Authorization: Bearer <session_token>`. 토큰은 브라우�
 | GET `/sessions/{id}` | 현재 완전 상태 | 없음 → 200 `Snapshot` | 401, 403, 404, 410 |
 | GET `/sessions/{id}/history` | 최근 60초 그래프 복구 | `generation`, `after_tick`(기본 −1) → 200 `HistoryResponse` | 400, 409, 410 |
 | GET `/sessions/{id}/events` | 최근 로그 복구 | `generation`, `after_event_seq`(기본 0) → 200 `EventsResponse` | 400, 409, 410 |
+| GET `/sessions/{id}/road` | 표시용 도로 모양(v1.7, 5.2절) | 없음 → 200 `RoadResponse` | 401, 403, 404, 410 |
 | DELETE `/sessions/{id}` | 종료·자원 해제 | 본문 없음 → 204 본문 없음 | 401, 403, 404, 410 |
 | WS `/sessions/{id}/stream` | 양방향 실시간 입력·결과 | 최초 hello 이후 아래 메시지 계약 | 인증 실패/제어 충돌 시 종료 |
 
@@ -289,9 +350,21 @@ REST 세션 API는 `Authorization: Bearer <session_token>`. 토큰은 브라우�
 }
 ```
 
-위 응답의 snapshot 문자열은 문서상 자리표시자이며 실제 응답은 타입에 따른 객체다. 요청 solver 생략 시 rule. 그 외 필드/미지원 solver는 거절한다. 초기 설정은 서버 `DemoConfig.defaults`에서 가져온다. nmpc가 준비되지 않았으면 `SOLVER_UNAVAILABLE`이며 rule로 자동 치환하지 않는다. Idempotency-Key는 120초 보존하고 같은 키+본문은 같은 생성 결과, 같은 키+다른 본문은 409. 동시 생성 중 중복 요청은 같은 결과를 기다린다.
+위 응답의 snapshot 문자열은 문서상 자리표시자이며 실제 응답은 타입에 따른 객체다. 요청 solver 생략 시 rule. v1.4부터 `auto_drive`(boolean, 기본 false)와 `auto_seed`(0 이상 안전 정수, 생략 시 서버가 정함), v1.5부터 `auto_level`(`low`/`normal`/`high`/`random`, 기본 `normal`)을 받는다(1.3절). 그 외 필드/미지원 solver/형식이 틀린 값은 거절한다. 자동 모드를 지원하지 않는 서버(`auto_drive_available=false`)는 `auto_drive=true`를 받아도 오류 없이 수동 세션을 만들고 `auto.enabled=false`로 알린다. 초기 설정은 서버 `DemoConfig.defaults`에서 가져온다. nmpc가 준비되지 않았으면 `SOLVER_UNAVAILABLE`이며 rule로 자동 치환하지 않는다. Idempotency-Key는 120초 보존하고 같은 키+본문은 같은 생성 결과, 같은 키+다른 본문은 409. 본문 비교에는 solver(기본값을 채운 값)와 auto_drive·auto_seed·auto_level(요청에 들어온 그대로, 생략은 생략, v1.5)을 모두 쓴다. 동시 생성 중 중복 요청은 같은 결과를 기다린다.
 
-`HealthResponse`는 상태 및 이용 가능한 solver만 공개하고 로컬 경로·가중치 내용을 노출하지 않는다. `DemoConfig`는 준비된 solver, 고정 설정, 시나리오의 정확한 순환 순서, 임계값/보정 출처 식별자, 튜토리얼 문구를 제공한다. 프론트가 숫자 상수를 별도로 복제하지 않는다.
+`HealthResponse`는 상태, 이용 가능한 solver, 자동 모드 지원 여부(`auto_drive_available`, v1.4)만 공개하고 로컬 경로·가중치 내용을 노출하지 않는다. `DemoConfig`는 준비된 solver, 고정 설정, 시나리오의 정확한 순환 순서, 임계값/보정 출처 식별자, 튜토리얼 문구를 제공한다. 프론트가 숫자 상수를 별도로 복제하지 않는다.
+
+### 5.2 표시용 굽은 도로 (v1.7)
+
+`GET /sessions/{id}/road`는 화면이 도로를 곡선으로 그리도록 곡률 구간을 준다. 인증·공통 오류는 다른 세션 REST 경로와 같고, 모델 step을 진행시키지 않는다.
+
+- **15c 시뮬레이션은 직선 평면 좌표이고 곡선은 표시용이다. 곡선이 동역학이나 탐지기에 영향을 주지 않는다.** 같은 입력이면 곡선 도로든 직선 도로든 tick별 상태·경보·충돌이 같다.
+- 좌표 해석: `x_m` = 도로 중심선을 따라간 거리 s, `y_m` = 중심선 기준 횡위치 d(왼쪽 +), `psi_rad` = 도로 접선 기준 방향각. 차로 중심·경계(`DemoConfig.road`)는 그대로 중심선 기준 횡위치다.
+- `pieces`: 곡률이 `s0_m`→`s1_m` 동안 `k0_1pm`→`k1_1pm`로 선형 변화(1/m, 왼쪽 +). 구간 밖은 곡률 0(직선). 회전은 완화곡선 + 원호 + 완화곡선이고 `turns`에 방향·반경·각도를 적는다(표시용 안내).
+- 세대(`session.created`, `session.reset`)마다 새 도로다. 응답의 `generation`은 현재 세대다. 자동 모드의 자동 복귀(1.3절)는 세대를 바꾸지 않으므로 도로도 그대로다.
+- `covered_until_m`까지는 `pieces`가 완전하다. 서버는 가장 앞 차량 위치 + 3000m까지 보내고, 요청이 올 때마다 필요한 만큼 이어 붙인다. 클라이언트는 남은 거리가 줄면(참조 구현: 1500m 이하) 다시 받는다. 세대가 바뀌면 새로 받는다.
+- `seed`는 도로 재현용이며 자동 모드 `auto_seed`와 **별개**다. 서버는 세대마다 도로 seed를 기록(로그)한다. `seed=null`이면 직선 도로(`pieces` 빈 배열).
+- 이 경로가 없는 v1.6 이전 서버는 알 수 없는 경로로 400 `INVALID_ARGUMENT`를 줄 수 있다. 클라이언트는 이를 오류로 띄우지 않고 직선 도로로 처리한다.
 
 ## 6. WebSocket 명령·이벤트 계약
 
@@ -352,7 +425,7 @@ REST 세션 API는 `Authorization: Bearer <session_token>`. 토큰은 브라우�
 }
 ```
 
-입력 TTL은 750ms다. 유효한 input.state가 750ms 동안 없으면 held/tapped를 비우고 `paused/input_timeout`으로 전환한다. running 진입/재개 시 TTL을 새로 시작한다. 단순 ping이 WASD 눌림 유효기간을 연장하지 않는다. tutorial/paused 동안에는 input timeout을 적용하지 않는다. ping은 1초 주기, 3초간 유효 메시지가 없으면 연결을 종료하고 `paused/disconnected`로 전환한다. 탭 비활성화 시 클라이언트가 빈 입력과 pause를 보내며, 서버 TTL은 그 메시지가 유실된 경우를 처리한다.
+입력 TTL은 750ms다. 유효한 input.state가 750ms 동안 없으면 held/tapped를 비우고 `paused/input_timeout`으로 전환한다. running 진입/재개 시 TTL을 새로 시작한다. 단순 ping이 WASD 눌림 유효기간을 연장하지 않는다. tutorial/paused 동안에는 input timeout을 적용하지 않는다. 자동 모드 세션에서 운전자가 조종 중일 때(1.3절)에도 적용하지 않는다. ping은 1초 주기, 3초간 유효 메시지가 없으면 연결을 종료하고 `paused/disconnected`로 전환한다. 탭 비활성화 시 클라이언트가 빈 입력과 pause를 보내며, 서버 TTL은 그 메시지가 유실된 경우를 처리한다.
 
 ### 6.3 서버 → 클라이언트
 
@@ -386,6 +459,7 @@ WebSocket 종료 코드는 1000 정상 종료, 1008 인증/Origin/제어 권한 
 | `model.scores` | e, e_long, e_lat, r_a, R1_S, R2_ttb, d_hat, psi_hat |
 | `model.accumulator` | S, S_prime, S_eff, clipped, hold_on |
 | `model.context` | active, intent_window, zone(앞→front/뒤→rear/나란히→alongside), dx, g, R2 활성/보정 상태 |
+| `auto` (v1.4, 선택) | 웹 어댑터의 가상 운전자 상태(1.3절). 15c 원본 값이 아니다. 없거나 `enabled=false`면 수동 세션. `state=manual`이면 사람이 개입해 수동으로 복귀한 자동 세션(v1.5) |
 | `ego_control` | ctl.backend→control_mode, ctl.solver, ctl.info와 ego_rec. 공통 policy에 stage/danger/engaged/TTC/v_ref와 **target_y=ctl.info.target_y(=policy.active_target, 실제 추종 목표), policy_target_y=ctl.policy.target_y, nmpc_override=(ctl.policy.ov is not None)**. nmpc에 풀이·fallback/예측 궤적. ctl.info 내부 `inf['target_y']`(정책 목표)와 최종 `info['target_y']`(추종 목표)가 다르므로 최종 info 값을 쓴다 |
 | `scenario` | 현재 sim.inj; 없으면 null. 최근 종료 시나리오 정보는 last_scenario_report로 분리 |
 | `scenario.elapsed_s` | 현재 sample_tick−inj.k0에 DT를 곱한 값. 시나리오 시작 시 0 |
@@ -524,7 +598,7 @@ web client
 
 ### 10.3 코드 동등성·표시 한계
 
-- 원본의 합성 환경·직선 도로·시뮬레이션 및 방향지시등 가정 문구를 화면에 유지한다.
+- 원본의 합성 환경·직선 도로·시뮬레이션 및 방향지시등 가정 문구를 화면에 유지한다. 굽은 도로를 표시할 때(5.2절)는 곡선이 표시용이고 시뮬레이션은 직선이라는 점을 문구에 함께 적는다.
 - k_drain 기본 1.3을 유지한다. 원본 UI는 1.0 외 값을 “미검증 설정”으로 표시하므로 “원본 보정 기준과 다른 k_drain=1.3”이라는 설정 상태를 숨기지 않는다. 이전 README에는 1.3에 대한 별도 데모 검증 결과가 있으므로 “어떤 검증도 없음”이라고 확대하지 않는다.
 - A/D 조작과 신호 의도 구간은 탐지에 영향을 준다. 이전 README/validate_v15c의 급제동 회복 중앙값 약 43.5초 등은 **공통 Vehicle 적용 전** 결과다. 탐지기는 같아도 현재 물리 관측 궤적이 바뀌므로 이를 현재 웹의 검증 결과나 고정 회복시간으로 인용하지 않는다.
 - 신호 의도 구간, 준비 시간, 앞/뒤 위치에 따른 탐지/반응 차이를 버그처럼 보이지 않도록 상태로 설명한다. tau_det와 tau_eff를 하나로 합치지 않는다.

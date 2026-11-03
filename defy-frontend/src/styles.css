@@ -50,8 +50,13 @@ button { font-family: var(--font-ui); }
 #banner .sample {
   color: #FFD3E2; font-weight: 700; padding: 0 8px; border: 1.5px solid #E2709B; border-radius: 3px; letter-spacing: .01em;
 }
+/* 실제 15c 서버: 경고가 아닌 표시 (데이터 근거 탭의 서버 표시와 같은 초록) */
+#banner .server {
+  color: #CDEBD9; font-weight: 700; padding: 0 8px; border: 1.5px solid #7CC29C; border-radius: 3px; letter-spacing: .01em;
+}
 #banner .info { color: #9AA6AE; }
 #testBar { margin-left: auto; display: flex; align-items: center; gap: 6px; position: relative; z-index: 60; } /* 안내 마스크 위 (개발용) */
+#testBar[hidden] { display: none; }
 #testBar .test-label { font-size: 12px; color: #9AA6AE; }
 #testBar select {
   background: #24313D; color: #E6EAED; border: 1px solid #3B4A57; border-radius: 3px; padding: 1px 4px;
@@ -317,6 +322,7 @@ ul.log li.empty { color: var(--muted); }
 }
 .pause-resume:hover:not(:disabled) { background: #F6CD4E; }
 .pause-resume:disabled { opacity: .45; cursor: default; box-shadow: none; }
+.pause-reload { margin-left: 8px; }
 
 /* 1001~1150px: 값 줄바꿈이 늘어나는 탭만 높이를 늘린다 */
 @media (min-width: 1001px) and (max-width: 1150px) {
@@ -403,3 +409,23 @@ ul.log li.empty { color: var(--muted); }
 @media (min-height: 900px) and (min-width: 1001px) {
   .dial svg.arc { max-width: 150px; }
 }
+
+/* ---- 자동 모드 (명세 1.3). 자동 세션에서만 요소가 생긴다 ---- */
+/* 주행 화면 도크: 자동 상태 (자차 반응 요약과 키 사이) */
+#autoBox { font-size: 12px; line-height: 1.35; color: #E6EAED; }
+#autoBox[hidden] { display: none; }
+#autoBox h3 { margin: 0 0 2px; font-size: 12px; font-weight: 600; color: var(--det-glow); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#autoBox .auto-state { font-weight: 600; }
+#autoBox .auto-state.manual { color: var(--paint); }
+#autoBox .auto-next { font: 600 14px/1.35 var(--font-num); font-variant-numeric: tabular-nums; }
+#autoBox .auto-hint, #autoBox .auto-keys { color: #93A0A9; }
+/* 운전자 키 (서버 held_applied): 사람 눌림(.pressed 흰 바탕)과 다르게 점선 하늘색 */
+.key.driver { background: #163A4E; border-color: var(--det-glow); outline: 2px dashed var(--det-glow); outline-offset: 1px; }
+
+/* 안내 말풍선: 자동 세션 한 줄 */
+.tut-auto { font-size: 13px; color: var(--det); font-weight: 600; margin-top: 6px; }
+.tut-auto[hidden] { display: none; }
+/* 데이터 근거: 자동 운전 기록 팝오버 */
+.auto-log-pop { width: min(460px, 46vw); max-height: 320px; overflow: auto; }
+.auto-log-pop ul.log li { white-space: normal; }
+.auto-log-head { font-size: 12px; font-weight: 600; color: var(--ink2); margin-bottom: 4px; }

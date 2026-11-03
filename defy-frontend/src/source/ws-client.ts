@@ -12,11 +12,11 @@
  * 세션 토큰은 이 모듈 메모리에만 둔다 (URL·로그·localStorage 에 넣지 않음). 응답 필드는 contract-access.ts 로만 읽는다.
  */
 import type {
-  ClientMessage, CommandMessage, CreateSessionResponse, DemoConfig, DemoEvent, ErrorResponse, EventsResponse,
-  HistoryResponse, ServerMessage, Snapshot,
+  ClientMessage, CommandMessage, CreateSessionRequest, CreateSessionResponse, DemoConfig, DemoEvent, ErrorResponse, EventsResponse,
+  HealthResponse, HistoryResponse, RoadResponse, ServerMessage, Snapshot,
 } from '../contracts';
 import {
-  readApiError, readCreateSession, readEventsResponse, readHistory, readSentCommand, readServerMessage, snapshotOrder,
+  readApiError, readCreateSession, readEventsResponse, readHealth, readHistory, readSentCommand, readServerMessage, snapshotOrder,
   type GraphPointView,
 } from '../contract-access';
 import { helloMessage } from '../input/messages';
@@ -39,7 +39,11 @@ export interface ServerErrorView {
   details: Record<string, unknown>;
   requestId: string | null;
   source: 'ws' | 'http';
+  origin: string | null;         // 오류가 난 요청: 보낸 명령의 action(예: session.reset) 또는 CREATE_ORIGIN. 모르면 null
 }
+
+// 첫 연결의 세션 생성 요청이 실패한 오류 (ServerErrorView.origin)
+export const CREATE_ORIGIN = 'POST /sessions';
 
 export interface ServerSink {
   onSnapshot(snapshot: Snapshot, events: DemoEvent[], kind: SnapshotKind): void;
@@ -63,6 +67,7 @@ const ACK_TIMEOUT_MS = 2000;      // 명령 응답 대기
 const MAX_RETRIES = 2;            // 같은 request_id 재전송 횟수
 const RECOVERY_TRIES = 3;         // STALE_GENERATION 으로 다시 받는 횟수
 const BACKOFF_MS = [500, 1000, 2000, 4000, 5000];
+const RECONNECT_CHECK_MS = 4000;  // 재접속 전 세션 확인 GET 대기 한도
 const RATE_LIMIT_TRIES = 3;
 const ENDED = new Set(['SESSION_EXPIRED', 'SESSION_NOT_FOUND', 'UNAUTHENTICATED', 'FORBIDDEN']);
 
@@ -105,7 +110,18 @@ export async function fetchDemoConfig(base: string): Promise<DemoConfig> {
   return (await res.json()) as DemoConfig;
 }
 
-interface PendingCommand { message: CommandMessage; generation: number; sentAt: number; retries: number; checking: boolean }
+// GET /health: 자동 모드 지원 여부 (명세 5, v1.4). 실패하면 지원하지 않는 것으로 본다 (시작 카드 없이 기존 흐름)
+export async function fetchAutoDriveAvailable(base: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${base}/health`, { cache: 'no-store' });
+    if (!res.ok) return false;
+    return readHealth((await res.json()) as HealthResponse).autoDriveAvailable === true;
+  } catch {
+    return false;
+  }
+}
+
+interface PendingCommand { message: CommandMessage; action: string; generation: number; sentAt: number; retries: number; checking: boolean }
 
 export function createServerSource(base: string, sink: ServerSink, opts: ServerSourceOptions) {
   let sessionId: string | null = null;
@@ -125,10 +141,10 @@ export function createServerSource(base: string, sink: ServerSink, opts: ServerS
 
   const auth = () => ({ Authorization: `Bearer ${token}` });
   const link = (l: LinkState) => { if (l.state === 'failed') failed = true; sink.onLink(l); };
-  const failWith = (step: string, err: unknown) => {
+  const failWith = (step: string, err: unknown, origin: string | null = null) => {
     const h = err instanceof HttpError ? err : null;
     link({ state: 'failed', step, reason: err instanceof Error ? err.message : String(err), code: h?.code ?? null, retryable: h?.retryable ?? true });
-    if (h?.code) sink.onServerError({ code: h.code, message: h.message, retryable: h.retryable, details: h.details, requestId: null, source: 'http' });
+    if (h?.code) sink.onServerError({ code: h.code, message: h.message, retryable: h.retryable, details: h.details, requestId: null, source: 'http', origin });
   };
 
   function wsUrl(path: string): string {
@@ -137,15 +153,18 @@ export function createServerSource(base: string, sink: ServerSink, opts: ServerS
     return abs.toString();
   }
 
-  async function getJson<T>(path: string): Promise<T> {
-    const res = await fetchWithRetryAfter(`${base}${path}`, { headers: auth(), cache: 'no-store' }, sink.onRateLimited);
+  // timeoutMs: 응답이 없으면 그만 기다린다 (서버가 멈춰 응답하지 않는 경우)
+  async function getJson<T>(path: string, timeoutMs?: number): Promise<T> {
+    const init: RequestInit = { headers: auth(), cache: 'no-store' };
+    if (timeoutMs != null) init.signal = AbortSignal.timeout(timeoutMs);
+    const res = await fetchWithRetryAfter(`${base}${path}`, init, sink.onRateLimited);
     if (!res.ok) throw await httpFail(res);
     return (await res.json()) as T;
   }
 
   // GET /sessions/{id}: 상태 확인 (명령 재시도·복구 중 리셋 확인)
-  async function fetchSnapshot(): Promise<Snapshot> {
-    const s = await getJson<Snapshot>(`/sessions/${sessionId}`);
+  async function fetchSnapshot(timeoutMs?: number): Promise<Snapshot> {
+    const s = await getJson<Snapshot>(`/sessions/${sessionId}`, timeoutMs);
     currentGeneration = snapshotOrder(s).generation;
     sink.onSnapshot(s, [], 'rest');
     return s;
@@ -165,10 +184,12 @@ export function createServerSource(base: string, sink: ServerSink, opts: ServerS
         sink.onSnapshot(v.snapshot, [], 'ack');
         return;
       case 'pong': sink.onPong(v.clientTimeMs); return;
-      case 'error':
+      case 'error': {
+        const origin = v.requestId ? pending.get(v.requestId)?.action ?? null : null;
         if (v.requestId) pending.delete(v.requestId); // 실패한 명령만 취소 (자동 재시도 안 함)
-        sink.onServerError({ code: v.code, message: v.message, retryable: v.retryable, details: v.details, requestId: v.requestId, source: 'ws' });
+        sink.onServerError({ code: v.code, message: v.message, retryable: v.retryable, details: v.details, requestId: v.requestId, source: 'ws', origin });
         return;
+      }
     }
   }
 
@@ -247,7 +268,7 @@ export function createServerSource(base: string, sink: ServerSink, opts: ServerS
         clearTimeout(readyTimer);
         ws = null;
         link({ state: 'failed', step: 'hello', reason: v.code, code: v.code, retryable: v.retryable });
-        sink.onServerError({ code: v.code, message: v.message, retryable: v.retryable, details: v.details, requestId: null, source: 'ws' });
+        sink.onServerError({ code: v.code, message: v.message, retryable: v.retryable, details: v.details, requestId: null, source: 'ws', origin: null });
         sock.close();
         return;
       }
@@ -280,10 +301,13 @@ export function createServerSource(base: string, sink: ServerSink, opts: ServerS
     reconnectTimer = setTimeout(async () => {
       reconnectTimer = null;
       try {
-        await fetchSnapshot(); // 세션이 살아 있는지 (만료·없음이면 재접속하지 않음)
+        // 세션이 살아 있는지 (만료·없음이면 재접속하지 않음). 서버가 멈춰 답이 없어도 시도 횟수가 늘도록 시간 제한
+        await fetchSnapshot(RECONNECT_CHECK_MS);
       } catch (err) {
         if (err instanceof HttpError && err.code && ENDED.has(err.code)) return failWith('재접속', err);
-        return reconnectLater(err instanceof Error ? err.message : String(err)); // 서버 응답 없음: 계속 시도
+        // 서버 응답 없음: 계속 시도 (시간 제한으로 끊은 요청은 브라우저 영어 문구 대신)
+        const timedOut = err instanceof Error && err.name === 'TimeoutError';
+        return reconnectLater(timedOut ? `${RECONNECT_CHECK_MS / 1000}초 동안 응답 없음` : err instanceof Error ? err.message : String(err));
       }
       openSocket(true);
     }, delay);
@@ -322,20 +346,21 @@ export function createServerSource(base: string, sink: ServerSink, opts: ServerS
   }, 250);
 
   return {
-    async start(): Promise<void> {
+    // body: 생성 요청 본문 (contract-access.createSessionBody). 직접 조종 + rule 은 {} (solver 생략 → rule)
+    async start(body: CreateSessionRequest = {}): Promise<void> {
       link({ state: 'connecting', step: '세션 생성 (POST /sessions)' });
       try {
         // 같은 Idempotency-Key 로 재요청해야 중복 생성되지 않는다 (429 대기 후 재요청 포함)
         const res = await fetchWithRetryAfter(`${base}/sessions`, {
           method: 'POST',
           headers: { 'content-type': 'application/json', 'Idempotency-Key': globalThis.crypto.randomUUID() },
-          body: JSON.stringify({}), // solver 생략 → rule
+          body: JSON.stringify(body),
         }, sink.onRateLimited);
         if (res.status !== 201) throw await httpFail(res);
         const created = readCreateSession((await res.json()) as CreateSessionResponse);
         sessionId = created.sessionId; token = created.token; wsPath = created.wsPath;
       } catch (e) {
-        failWith('세션 생성', e);
+        failWith('세션 생성', e, CREATE_ORIGIN);
         return;
       }
       link({ state: 'connecting', step: 'WebSocket 연결 · hello' });
@@ -347,7 +372,7 @@ export function createServerSource(base: string, sink: ServerSink, opts: ServerS
       // 복구 중에도 ping 은 보낸다 (서버의 3초 생존 판정). 다른 메시지는 복구가 끝난 뒤
       if ((recovering && msg.type !== 'ping') || !rawSend(msg)) return false;
       const c = readSentCommand(msg);
-      if (c) pending.set(c.requestId, { message: c.message, generation: c.generation, sentAt: performance.now(), retries: 0, checking: false });
+      if (c) pending.set(c.requestId, { message: c.message, action: c.action, generation: c.generation, sentAt: performance.now(), retries: 0, checking: false });
       return true;
     },
 
@@ -376,6 +401,21 @@ export function createServerSource(base: string, sink: ServerSink, opts: ServerS
       if (!sessionId) return;
       failed = false; attempt = 0;
       reconnectLater('다시 시도');
+    },
+
+    // 굽은 도로 곡률 구간 (GET /sessions/{id}/road, 명세 5.2). 이 경로가 없는 서버면 null → 직선 도로
+    // 없는 경로 응답: 우리 서버(real/server.ts, mock/server.ts)는 400 INVALID_ARGUMENT("경로 없음")
+    // 404 분기는 방어용 — 404를 주는 서버는 확인하지 못했다
+    async fetchRoad(): Promise<RoadResponse | null> {
+      if (!sessionId || !token) return null;
+      const res = await fetch(`${base}/sessions/${sessionId}/road`, { headers: auth(), cache: 'no-store' });
+      if (res.status === 404) return null;
+      if (!res.ok) {
+        const err = await httpFail(res);
+        if (err.status === 400 && err.code === 'INVALID_ARGUMENT') return null;
+        throw err;
+      }
+      return (await res.json()) as RoadResponse;
     },
 
     // 시험용 목업 경로 (계약 외)
