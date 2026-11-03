@@ -11,7 +11,7 @@ import { createSessionBody, readConfig, readEvent, readSnapshot, snapshotOrder, 
 import { AUTO_START_LEVEL, DATA_SOURCE, DEV_TOOLS, FORCE_MANUAL, SERVER_BASE_URL } from './config';
 import { SAMPLE_DEMO_CONFIG, STATIC_FRAMES } from './source/fixtures';
 import { createSamplePlayer } from './source/sample-player';
-import { createServerSource, fetchAutoDriveAvailable, fetchDemoConfig, type LinkState, type SnapshotKind } from './source/ws-client';
+import { createServerSource, CREATE_ORIGIN, fetchAutoDriveAvailable, fetchDemoConfig, type LinkState, type SnapshotKind } from './source/ws-client';
 import { createRoadView } from './view/road';
 import { createRoad, STRAIGHT_ROAD, type Road } from './road-geometry';
 import { SAMPLE_ROAD } from './source/sample-road';
@@ -29,7 +29,7 @@ import { createTutorialOverlay } from './ui/tutorial';
 import { createConnectionOverlay, linkLabel, linkPhase } from './ui/connection';
 import { createErrorUi, newSessionAction, type ErrorCardAction } from './ui/error';
 import { errorPolicy } from './source/error-policy';
-import { AUTO_TEXT, BUTTON, ERROR_TEXT, LOCK_TEXT, RATE_LIMIT_WAIT } from './ui/text-ko';
+import { AUTO_TEXT, BANNER_TEXT, BUTTON, ERROR_TEXT, LOCK_TEXT, RATE_LIMIT_WAIT } from './ui/text-ko';
 import { FAULTS } from './ui/debug-faults';
 import type { ServerErrorView } from './source/ws-client';
 
@@ -51,6 +51,12 @@ const hashFrame = [...hashOpts].find(o => o.startsWith('frame='))?.slice('frame=
 const ROAD_STRAIGHT = new URLSearchParams(location.search).get('road') === 'straight';
 const ROAD_REFETCH_MARGIN_M = 1500; // 받은 도로 끝까지 이만큼 남으면 다음 구간을 받는다
 const ROAD_RETRY_MS = 2000;
+// 실제 15c 서버의 DemoConfig.banner 머리 (real/config.ts). 목업은 "목업 서버 (실제 15c 아님) · …" (mock/config.ts)
+const REAL_SERVER_BANNER = '실제 15c';
+// INTERNAL_ERROR 가 이 시간 안에 이만큼 오면 서버(python 브리지)가 멈춘 것으로 본다. R 직후·세션 생성 실패는 1번이면
+const RESTART_WINDOW_MS = 10_000;
+const RESTART_COUNT = 3;
+const RESTART_SAME_MS = 1000; // 이 간격 안의 INTERNAL_ERROR 는 같은 오류로 본다
 
 const connUi = createConnectionOverlay();
 const errorUi = createErrorUi();
@@ -64,6 +70,7 @@ async function loadDemoConfig(): Promise<DemoConfig | null> {
   } catch (e) {
     // 서버를 못 찾으면 샘플로 바꾸지 않고 오류 카드만
     console.warn('[server] DemoConfig 실패', e);
+    el('bannerTitle').textContent = BANNER_TEXT.unreachable; // index.html 기본 문구(샘플 데이터)가 남지 않게
     connUi.hide();
     errorUi.show('CONNECTION_FAILED', [newSessionAction()]);
     return null;
@@ -109,6 +116,7 @@ function boot(demoConfig: DemoConfig): void {
     fatal: null as string | null,                       // 세션을 더 쓸 수 없는 오류 코드 (운전 잠금)
     lock: null as string | null,                        // 지금 표시 중인 운전 잠금 이유
     autoRequested: false,                               // 자동 세션을 요청했음 (지원 안 함 토스트 1회)
+    internalAt: [] as number[],                         // 최근 INTERNAL_ERROR 시각 (서버 재시작 판단)
   };
 
   // ---- 수신: 샘플 재생기·정적 프레임·서버(ready/telemetry/ack) 공통 ----
@@ -122,6 +130,9 @@ function boot(demoConfig: DemoConfig): void {
     if (!older) {
       const view = readSnapshot(snap);
       syncRoad(view);
+      // 스텝 실패는 오류 메시지 없이 phase=error 로만 온다: 새로 error 가 된 표본도 INTERNAL_ERROR 1번으로 센다
+      if (server && view.phase === 'error' && view.runtime.error?.code === 'INTERNAL_ERROR'
+        && (cur?.phase !== 'error' || cur.generation !== view.generation) && needsRestart(null)) lockRestart();
       // 자동을 요청했는데 서버가 auto 없이 수동 세션을 만들었다 (명세 5.1): 첫 표본에서 한 번 알린다
       if (state.autoRequested) { state.autoRequested = false; if (!view.auto) errorUi.toast(AUTO_TEXT.unsupported, 6000); }
       if (buffer.push(view, now)) history.clear(); // 새 generation: 이전 그래프 비움
@@ -230,7 +241,9 @@ function boot(demoConfig: DemoConfig): void {
       case 'resync': input.allowTutorialRetry(); serverSource?.resync(); return;
       case 'reconnect': serverSource?.forceReconnect(`${err.code} — 최신 연결·커서 확인 후 재접속`); return;
       case 'rateLimited': errorUi.toast(`${ERROR_TEXT.RATE_LIMITED!.title} — 입력 전송을 잠시 줄였습니다`); input.slowDown(10_000); return;
-      case 'internal': errorUi.toast(ERROR_TEXT.INTERNAL_ERROR!.title, 6000); serverSource?.resync(); return;
+      case 'internal':
+        if (needsRestart(err.origin)) return lockRestart();
+        errorUi.toast(ERROR_TEXT.INTERNAL_ERROR!.title, 6000); serverSource?.resync(); return;
       case 'ended': return lockFatal(err.code, [newSessionAction()]);
       case 'conflict': return lockFatal(err.code, [{ label: BUTTON.retry, run: () => { state.fatal = null; serverSource?.retryConnect(); } }]);
       case 'unavailable': return lockFatal(err.code, [err.retryable ? { label: BUTTON.retry, run: () => location.reload() } : newSessionAction()]);
@@ -244,6 +257,19 @@ function boot(demoConfig: DemoConfig): void {
     input.clearInputs();
     errorUi.show(code, actions);
     state.shown = null;
+  }
+
+  // INTERNAL_ERROR 1번을 기록하고, 서버를 다시 켜야 하는지: R(session.reset) 직후·세션 생성 실패, 또는 10초 안에 3번
+  function needsRestart(origin: string | null): boolean {
+    const now = performance.now();
+    state.internalAt = state.internalAt.filter(t => now - t < RESTART_WINDOW_MS);
+    // 같은 오류가 오류 메시지와 phase=error 표본으로 겹쳐 오면(목업 등) 1번으로 센다
+    const last = state.internalAt[state.internalAt.length - 1];
+    if (last == null || now - last > RESTART_SAME_MS) state.internalAt.push(now);
+    return origin === 'session.reset' || origin === CREATE_ORIGIN || state.internalAt.length >= RESTART_COUNT;
+  }
+  function lockRestart(): void {
+    if (!state.fatal) lockFatal('SERVER_RESTART_NEEDED', [newSessionAction()]);
   }
 
   // 운전 입력이 막힌 이유 (키 영역·도로에 작게)
@@ -396,9 +422,13 @@ function boot(demoConfig: DemoConfig): void {
   }
 
   // ---- 시작 ----
-  el('bannerTitle').textContent = server
-    ? '서버 모드 — 연결된 서버의 값 (목업 서버는 실제 15c 아님)'
+  // 서버 모드: 실제 15c 서버면 경고가 아닌 표시, 그 밖(목업 등)은 지금처럼 경고 표시
+  const realServer = server && cfg.banner.startsWith(REAL_SERVER_BANNER);
+  const bannerTitle = el('bannerTitle');
+  bannerTitle.textContent = server
+    ? (realServer ? BANNER_TEXT.real : BANNER_TEXT.other)
     : '샘플 데이터 — 실제 15c 출력 아님';
+  bannerTitle.className = realServer ? 'server' : 'sample';
   el('bannerInfo').title = [
     cfg.banner, `원본 보정 기준과 다른 k_drain=${cfg.kDrainDefault}`,
     server ? `서버 모드: ${SERVER_BASE_URL} (개발 서버가 프록시)` : '서버 미연결 — 샘플 Snapshot 재생',

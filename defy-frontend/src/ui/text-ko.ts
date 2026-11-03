@@ -7,7 +7,8 @@ import type { AutoDriveLevel, AutoDriveState, AutoStopReason, ErrorCode, PauseRe
 export interface ErrorText { title: string; body: string }
 
 // 사용자에게 보이는 오류 (명세 9). 조용히 처리하는 코드는 여기 없다 (source/error-policy.ts 참고)
-export const ERROR_TEXT: Partial<Record<ErrorCode | 'CONNECTION_FAILED', ErrorText>> = {
+// SERVER_RESTART_NEEDED: 서버 코드가 아니라 화면 판단 (R 직후 또는 10초 안에 3번 INTERNAL_ERROR, main.ts)
+export const ERROR_TEXT: Partial<Record<ErrorCode | 'CONNECTION_FAILED' | 'SERVER_RESTART_NEEDED', ErrorText>> = {
   UNAUTHENTICATED: { title: '세션 인증이 끝났습니다', body: '이 세션으로는 더 조작할 수 없습니다. 새 세션을 시작하면 안내부터 다시 시작합니다.' },
   FORBIDDEN: { title: '세션 인증이 끝났습니다', body: '이 세션으로는 더 조작할 수 없습니다. 새 세션을 시작하면 안내부터 다시 시작합니다.' },
   SESSION_NOT_FOUND: { title: '세션이 만료되었습니다', body: '서버에 이 세션이 없습니다. 새 세션을 시작하면 안내부터 다시 시작합니다.' },
@@ -18,9 +19,24 @@ export const ERROR_TEXT: Partial<Record<ErrorCode | 'CONNECTION_FAILED', ErrorTe
   MODEL_UNAVAILABLE: { title: '지금은 이 제어 방식을 쓸 수 없습니다', body: '서버의 모델이 준비되지 않았습니다.' },
   INTERNAL_ERROR: { title: '서버 오류입니다. R로 다시 시작하세요', body: '운전 입력은 막혀 있고 R(전체 초기화)만 받습니다.' },
   CONNECTION_FAILED: { title: '서버 연결 실패', body: '서버에 연결할 수 없습니다. 서버가 켜져 있는지 확인한 뒤 새 세션을 시작하세요.' },
+  SERVER_RESTART_NEEDED: { title: '서버를 다시 시작해야 합니다', body: 'python 브리지가 멈췄을 수 있습니다. npm run real 터미널을 다시 켠 뒤 [새 세션 시작]을 누르세요' },
 };
 
-export const BUTTON = { newSession: '새 세션 시작', retry: '다시 시도', close: '닫기' };
+export const BUTTON = { newSession: '새 세션 시작', retry: '다시 시도', close: '닫기', reload: '새로고침' };
+
+// 상단 배너 (서버 모드). 실제/목업은 서버 DemoConfig.banner 로 구분한다 (main.ts)
+export const BANNER_TEXT = {
+  real: '서버 모드 — 실제 15c (demo_v15c)',
+  other: '서버 모드 — 연결된 서버의 값 (목업 서버는 실제 15c 아님)',
+  unreachable: '서버 모드 — 서버에 연결하지 못함',
+};
+
+// 연결이 끊긴 동안 정지 오버레이 안내 (ui/pause.ts)
+export const LINK_DOWN_TEXT = {
+  waiting: '입력은 비워졌습니다. 복구되면 아래 [재개] 버튼이 활성화됩니다 (자동으로 재개하지 않음).',
+  serverDown: '서버가 응답하지 않습니다. 서버 터미널(npm run real)을 다시 켠 뒤 [새로고침]을 누르세요',
+  failed: '오류 카드의 버튼을 누르세요',
+};
 
 export const RATE_LIMIT_WAIT = (s: number) => `잠시 후 다시 시도해 주세요 — ${s}초 뒤 자동으로 다시 요청합니다`;
 
