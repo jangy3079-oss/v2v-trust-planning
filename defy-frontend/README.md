@@ -8,7 +8,7 @@
 ## 준비
 
 - **Node.js 24 이상.** 서버(`real/*.ts`, `mock/*.ts`)를 Node가 TypeScript 그대로 실행하기 때문입니다. nvm을 쓴다면 `nvm use`로 `.nvmrc`의 버전을 고를 수 있습니다.
-- **실제 15c 서버용 Python:** torch, numpy, scipy가 필요하고, nmpc를 쓰려면 casadi도 필요합니다. `python3`가 이 패키지들이 있는 파이썬이 아니면 `DEFY_PYTHON=/path/to/python`으로 지정합니다(`real/README.md`). 정확한 패키지 목록과 버전은 확인 필요입니다.
+- **실제 15c 서버용 Python:** torch, numpy, scipy가 필요하고, nmpc를 쓰려면 casadi도 필요합니다. `python3`가 이 패키지들이 있는 파이썬이 아니면 `DEFY_PYTHON=/path/to/python`으로 지정합니다(`real/README.md`). 시연 PC(Windows, Python 3.13)에서 동작을 확인한 버전: numpy 2.2.4, torch 2.6.0+cpu, scipy 1.16.2, casadi 3.8.2. 이 PC에서 동작 확인한 버전이며 필수 버전은 아닙니다(팀원 확인 전). 웹 시연에는 pygame이 필요 없습니다.
 - 이 폴더는 `v2v-trust-planning` 저장소의 `defy-frontend/`입니다. 실제 서버가 `../demo_v15c`를 읽으므로 저장소 전체를 받습니다. 별도 저장소(`cksdyd3786/defy-frontend`)와의 관계는 확인 필요입니다.
 
 ```bash
@@ -47,6 +47,26 @@ npm run preview   # 빌드 결과를 http://localhost:4173 으로 제공. /api �
 ```
 
 http://localhost:4173/?source=server 를 엽니다. 시연 빌드에서는 개발용 도구("테스트" 드롭다운, `#debug` 창, `#frame=` 정적 프레임)가 숨겨지고, 주소에 `#debug`를 붙여도 열리지 않습니다(`src/config.ts`의 `DEV_TOOLS = import.meta.env.DEV`).
+
+### 시연 체크리스트
+
+1. **`defy-frontend` 폴더에서 실행합니다.** 저장소 맨 위 폴더에서 `npm run real`을 치면 `Could not read package.json`(ENOENT)으로 멈춥니다.
+2. **Windows에서는 Python을 지정합니다.** `python3`는 Microsoft Store 별칭이라 서버가 `python 브리지가 종료되었습니다 (code 9009)`로 바로 죽습니다. PowerShell에서 둘 중 하나로:
+   - (a) `python`이 PATH에 있으면:
+     ```powershell
+     $env:DEFY_PYTHON=(Get-Command python).Source; npm run real
+     ```
+     PATH에 없으면 `Get-Command`가 "찾을 수 없음" 오류로 실패합니다. 그때는 (b)를 씁니다.
+   - (b) 전체 경로로:
+     ```powershell
+     $env:DEFY_PYTHON="C:\Users\<사용자>\AppData\Local\Programs\Python\Python313\python.exe"; npm run real
+     ```
+3. **서버 하나, 탭 하나.** 주소는 http://localhost:4173/?source=server 입니다. `?source=server`를 빼먹으면 위쪽 배너가 "샘플 데이터 — 실제 15c 출력 아님"이고 도크에 "자동 · 높음 · seed …"가 없습니다. 실제 서버에 붙으면 배너가 "서버 모드 — 실제 15c (demo_v15c)"(초록)입니다.
+4. **설명하려고 멈출 때:** 다른 창을 누르면 "일시정지 · 창을 벗어남"이 나옵니다. 돌아와서 [재개]를 누릅니다. 화면에 따로 정지 버튼은 없습니다(아래 [시나리오 해제 (0)]는 정지가 아닙니다).
+5. **수동으로 시나리오(1~5)를 보여 준 뒤에는 0으로 해제하고 손을 뗍니다.** 가장자리 근처에서 위빙을 켠 채 손을 떼면 자동 복귀 직후 잠깐 도로를 벗어날 수 있습니다(알려진 한계).
+6. **서버가 죽거나 꺼지면:** 화면에 "서버가 응답하지 않습니다… [새로고침]" 또는 "서버를 다시 시작해야 합니다" 카드가 나옵니다. 터미널에서 `npm run real`을 다시 켜고 [새로고침] 또는 [새 세션 시작]을 누릅니다.
+7. **실행 중 브리지가 죽으면 서버가 약 60초 멈춘 뒤 종료될 수 있습니다.** → `npm run real`을 다시 켜고 [새로고침]을 누릅니다.
+8. **시연 전에 실제 PC·브라우저에서 10분 이상 손을 떼고 돌려 봅니다.** headless 브라우저 점검에서 입력 없이 약 5분 뒤 페이지가 멈춘 일이 있었습니다(원인 미확인). Edge라면 절전 탭(효율 모드)을 끕니다.
 
 ### 목업 서버 (개발용, 실제 15c 아님)
 

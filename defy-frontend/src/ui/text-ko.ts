@@ -75,7 +75,7 @@ export const AUTO_TEXT = {
   status: '자동',
   levelRandomNow: (now: string) => `무작위 · 지금 ${now}`,
   nextIn: (s: number) => `다음 이벤트까지 ${s.toFixed(1)}초`,
-  manualBack: 'R을 누르면 자동 주행으로 돌아갑니다',
+  manualBack: '키를 누르지 않으면 자동으로 돌아갑니다 · R은 처음부터', // 남은 초(auto_resume_in_s)가 없을 때만
   manualResumeIn: (s: number) => `${s.toFixed(1)}초 뒤 자동 복귀 · R은 처음부터`,
   keyTakesOver: '키를 누르면 직접 조종으로 바뀝니다',
   randomTip: '무작위·시드는 가상 운전자의 입력 순서에만 쓰입니다. 시뮬레이션 잡음(배경 흔들림·관측 잡음)은 매번 같습니다.',
